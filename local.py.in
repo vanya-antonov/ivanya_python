@@ -2,29 +2,25 @@
 
 DB_ACCOUNTS = {
 	'gtdb' : {
-		'host' : "localhost",
-		'name' : "genetack",
-		'user' : "ivan",
-		'pass' : "123",
+		'name' : "genetack",         'host' : "localhost",
+		'user' : "ivan",             'pass' : "123",
+	},
+	'gtdb2' : {
+		'name' : "gtdb2",            'host' : "localhost",
+		'user' : "ivan",             'pass' : "123",
 	},
 	'ivdb' : {
-		'host' : "ivanya.com",
-		'name' : "ivanyaco_toilet",
-		'user' : "ivanyaco_toilet",
-		'pass' : "123",
+		'name' : "ivanyaco_toilet",  'host' : "ivanya.com",
+		'user' : "ivanyaco_toilet",  'pass' : "123",
 	},
 	'sadb' : {
-		'host' : "localhost",
-		'name' : "calc_hg19",
-		'user' : "ivan",
-		'pass' : "123",
+		'name' : "calc_hg19",        'host' : "localhost",
+		'user' : "ivan",             'pass' : "123",
 	},
 	'svdb' : {
-		'host' : "slavanya.com",
-		'name' : "slavanya_deals",
-		'user' : "slavanya_deals",
-		'pass' : "123",
+		'name' : "slavanya_deals",   'host' : "slavanya.com",
+		'user' : "slavanya_deals",   'pass' : "123",
 	},
 };
-DB_ACCOUNTS['default'] = DB_ACCOUNTS['gtdb']
+DB_ACCOUNTS['default'] = DB_ACCOUNTS['gtdb2']
 

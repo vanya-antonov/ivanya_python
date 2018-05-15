@@ -6,9 +6,12 @@ import os
 import re
 import shutil
 from pprint import pprint
-#from warnings import warn
+from collections import Counter
 
+import Bio.Alphabet
+import Bio.Seq
 from Bio import SeqIO
+#from Bio.Seq import Seq as BioSeq
 from Bio.SeqFeature import CompoundLocation
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import GC
@@ -50,8 +53,8 @@ class GeneTackDB(BaseUtilDB):
 
 class TableObject:
     
-    def __init__(self, gtdb, db_id, main_sql, unit=None, add_prm=False,
-                 prm_value=[], prm_int=[], prm_float=[], prm_list=[]):
+    def __init__(self, gtdb, db_id, main_sql, add_prm=False,
+                 prm_str=[], prm_int=[], prm_float=[], prm_list=[]):
         self.gtdb = gtdb
         self.prm = {}
         
@@ -65,7 +68,7 @@ class TableObject:
         
         # Load params if requested
         if add_prm:
-            prm_sql = 'select name, value, num from {0}_params where {0}_id=%s'.format(unit)
+            prm_sql = 'select name, value, num from {0}_params where {0}_id=%s'.format(self._unit)
             prm_res = gtdb.exec_sql_ar(prm_sql, db_id)
             for d in prm_res:
                 if d['name'] in prm_list:
@@ -75,7 +78,7 @@ class TableObject:
                 elif d['name'] in self.prm:
                     raise Exception("Param name '{}' is duplicated, but not in prm_list".format(d['name']))
                 
-                if d['name'] in prm_value:
+                if d['name'] in prm_str:
                     self.prm[d['name']] = d['value']
                 elif d['name'] in prm_int:
                     self.prm[d['name']] = int(d['num'])
@@ -153,21 +156,53 @@ class Org(TableObject):
         return os.path.relpath(full_path, gtdb.gtdb_dir)
 
 
-class Seq(TableObject):
+class Seq(TableObject, Bio.Seq.Seq):
     
-    def __init__(self, gtdb, db_id):
+    def __init__(self, gtdb, db_id, read_seq=False, use_seq=None):
+        """Create Seq corresponding to the SEQ GeneTack DB table
+
+        Arguments:
+         - gtdb - [reqiured] GeneTackDB object
+         - db_id - [required] valid ID from the SEQ table
+         - read_seq - [optional] read the sequence from a DB file
+         - use_seq - [optional] take sequence from this Bio.Seq.Seq object
+        """
+        self._unit = 'seq'
+        self._has_seq = False
         main_sql = """
             SELECT id, user_id, c_date, org_id, name, descr, type, ext_id, len
             FROM seqs WHERE id=%s
         """
-        super().__init__(
-            gtdb, db_id, main_sql, unit='seq', add_prm=True,
-            prm_value = ['fna_path', 'gbk_path'],
+        TableObject.__init__(
+            self, gtdb, db_id, main_sql,
+            add_prm = True,
+            prm_str = ['fna_path', 'gbk_path'],
+            prm_int = ['num_n', 'transl_table'],
             prm_float = ['gc'],
-            prm_int = ['num_n'],
         )
+        
+        # Initialize the Bio.Seq if requested
+        if use_seq is not None:
+            Bio.Seq.Seq.__init__(self, str(use_seq), use_seq.alphabet)
+        elif read_seq:
+            fasta_fn = os.path.join(gtdb.gtdb_dir, self.prm['fna_path'])
+            record = SeqIO.read(fasta_fn, "fasta")
+            alphabet = Bio.Alphabet.SingleLetterAlphabet
+            if self.type == 'DNA' and self.prm['num_n'] == 0:
+                alphabet = Bio.Alphabet.IUPAC.unambiguous_dna
+            elif self.type == 'DNA' and self.prm['num_n'] > 0:
+                alphabet = Bio.Alphabet.IUPAC.ambiguous_dna
+            Bio.Seq.Seq.__init__(self, str(record.seq), alphabet)
+        
+        # self._data is created by the Bio.Seq.Seq constructor
+        if hasattr(self, '_data'):
+            # make sure that len in DB and the actual sequence length match
+            if self.len != len(self):
+                raise Exception("Sequence length ('%d') != value in DB ('%d')", (self.len, len(self)))
+            else:
+                self._has_seq = True
     
-    #---
+    
     def delete_from_db(self):
         for d in self.gtdb.exec_sql_ar('select id from fsgenes where seq_id=%s', self.id):
             FSGene(self.gtdb, d['id']).delete_from_db()
@@ -175,9 +210,10 @@ class Seq(TableObject):
             SFeat(self.gtdb, d['id']).delete_from_db()
         self.gtdb.exec_sql_nr('DELETE FROM seq_params WHERE seq_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM seqs       WHERE     id=%s', self.id)
-        logging.warning('Delete files is NOT implemented!!')
-#        if self.fna_path is not None:
-#            self.gtdb.delete_file(self.fna_path)
+        
+        all_files = [self.prm.get('fna_path'), self.prm.get('gbk_path')]
+        for fn in filter(lambda fn: fn is not None, all_files):
+            self.gtdb.delete_file(fn)
     
     #---
     # https://stackoverflow.com/a/12179752/310453
@@ -192,7 +228,6 @@ class Seq(TableObject):
         else:
             return res_l[0]['id']
     
-    #---
     @staticmethod
     def create_new_in_db_from_SeqRecord(gtdb, record, org, user_id):
         name   = record.name
@@ -208,12 +243,17 @@ class Seq(TableObject):
         """,db_id, user_id, org.id, name, descr, m_type, ext_id, length
         )
         
-        # Seq params
+        # SEQ_PARAMS
         fna_path = Seq._save_fasta(gtdb, record, org, db_id)
         gtdb.add_param_to('seq', db_id, 'fna_path', value=fna_path)
         
         gbk_path = Seq._save_gbk(gtdb, record, org)
         gtdb.add_param_to('seq', db_id, 'gbk_path', value=gbk_path)
+        
+        # Get translation table
+        transl_table = _get_genetic_code_from_SeqRecord(record)
+        if transl_table is not None:
+            gtdb.add_param_to('seq', db_id, 'transl_table', num=transl_table)
         
         num_n = len(re.compile('[^ACGTacgt]').findall(str(record.seq)))
         gtdb.add_param_to('seq', db_id, 'num_n', num=num_n)
@@ -247,20 +287,17 @@ class Seq(TableObject):
 
 class SFeat(TableObject):
     
-    #---
     def __init__(self, gtdb, db_id):
         super().__init__(gtdb, db_id, """
             SELECT id, seq_id, type, start, end, strand, name, descr, ext_id
             FROM sfeats WHERE id=%s
         """)
     
-    #---
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE sfeat_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM sfeat_params  WHERE sfeat_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM sfeats        WHERE       id=%s', self.id)
     
-    #---
     @staticmethod
     def create_new_in_db_from_SeqFeature(gtdb, f, seq_id):
         start   = int(f.location.start)
@@ -294,36 +331,77 @@ class SFeat(TableObject):
 
 
 class FSGene(TableObject):
-    
-    #---
     def __init__(self, gtdb, db_id):
         super().__init__(gtdb, db_id, """
             SELECT id, user_id, seq_id, fs_coord, type, start, end, strand, source
             FROM fsgenes WHERE id=%s
         """)
     
-    #---
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_params WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgenes       WHERE        id=%s', self.id)
     
-    #---
+    def set_sfeats(self, sfeat_list):
+        # Remove old sfeat links
+        self.gtdb.exec_sql_nr('delete from fsgene_sfeats where fsgene_id=%s', self.id)
+        
+        sfeat_descr_l = []
+        for sfeat_id in sfeat_list:
+            self.gtdb.exec_sql_in('INSERT INTO fsgene_sfeats (fsgene_id, sfeat_id)', self.id, sfeat_id)
+            sfeat = SFeat(self.gtdb, sfeat_id)
+            if sfeat.descr is not None:
+                sfeat_descr_l.append(sfeat.descr)
+        
+        # Update fsgene descr
+        fsgene_descr = None
+        if len(sfeat_descr_l) > 0:
+            fsgene_descr = ' | '.join(sfeat_descr_l)
+        self.gtdb.exec_sql_nr('update fsgenes set descr=%s where id=%s', fsgene_descr, self.id)
+    
+    def make_all_params(self, seq):
+        self.make_prm_seqs(seq)
+        
+    def make_prm_seqs(self, seq):
+        prm_names = ['prot_seq_n', 'prot_seq_c', 'nt_seq_n', 'nt_seq_c']
+        
+        if seq is None:
+            seq = Seq(self.gtdb, self.seq_id, read_seq=True)
+        
+        up_len_nt = self.fs_coord - self.start
+        down_len_nt = self.end - self.fs_coord
+        if self.strand == -1:
+            up_len_nt, down_len_nt = down_len_nt, up_len_nt
+        
+        print('BEFORE', up_len_nt, down_len_nt)
+        # Take into account fs-type if the FS position is in a middle of codon.
+        # Round down (int(1.9) is 1) fs-coord to avoid stop codon in such cases: aaa_tgA_CCC
+        if up_len_nt % 3 != 0:
+            up_len_nt = 3 * int(up_len_nt/3 + 1)                 # round by the whole number of codons
+            down_len_nt = 3 * int((down_len_nt - self.type)/3)   # back-FS increases the C-part length
+        
+        print('AFTER', up_len_nt, down_len_nt)
+        pprint(vars(self))
+        
+        chunk_nt = seq[self.start:self.end]
+        if self.strand == -1:
+            chunk_nt = chunk_nt.reverse_complement()
+        
+        up_chunk_nt = chunk_nt[:up_len_nt]
+        down_chunk_nt = chunk_nt[-down_len_nt:]
+        prot_seq_n = up_chunk_nt.translate(table=11)
+        prot_seq_c = down_chunk_nt.translate(table=11).rstrip('*')  # removing a stop codon at the end
+        print(prot_seq_n, prot_seq_c, up_len_nt, down_len_nt)
+        sys.exit()
+    
     @staticmethod
-    def create_new_in_db_from_SeqFeature(gtdb, f, seq_id, user_id, source=None):
-        error = None
-        if not isinstance(f.location, CompoundLocation):
-            error = "Feature location is not a CompoundLocation object: '{}'".format(str(f.location))
-        if len(f.location.parts) != 2:
-            error = "CompoundLocation '{}' has '{}' parts!".format(str(f.location), len(f.location.parts))
-        if f.location.operator != 'join':
-            error = "Wrong feature location operator = '{}'".format(f.location.operator)
-        if f.location.strand is None:
-            error = "The parts of CompoundLocation have different strands = '{}'".format(f.location)
+    def create_new_in_db_from_SeqFeature(gtdb, f, seq, user_id, source=None):
+        error = FSGene._validate_SeqFeature(f)
         if error is not None:
             logging.warning(error)
             return None
         
+        # Determine fs_coord and fs_type
         if f.location.parts[0].start < f.location.parts[1].start:
             left_part, right_part = f.location.parts[0], f.location.parts[1]
         else:
@@ -336,38 +414,69 @@ class FSGene(TableObject):
         if fs_type != 0 and fs_type % 3 == 0:
             logging.warning("fs_type = '{}' for feature {} is divisible by 3!".format(fs_type, f))
         
+        # Validate fs_type and fs_coord, if possible
+        if 'translation' in f.qualifiers:
+            seq_dict = FSGene._get_prot_seq_parts(start1, end2, f.strand, fs_coord, fs_type, seq)
+            my_prot = seq_dict['prot_seq_n'].lower() + seq_dict['prot_seq_c'].upper()
+            true_prot = f.qualifiers['translation'][0]
+            if my_prot.upper() != true_prot.upper():
+                fmt = "\nThe true and reconstructed fs-prot seqs do not match:\n%s\n%s\n"
+                raise Exception(fmt % (true_prot, my_prot))
+        
         # make name like: 'NC_010002.1:1922457:-1'
-        seq = Seq(gtdb, seq_id)
-        name = '{}:{}:{:+d}'.format(seq.ext_id, fs_coord, fs_type)
+        name = '%s:%d:%+d' % (seq.ext_id, fs_coord, fs_type)
         
         db_id = gtdb.get_random_db_id('fsgenes', 'id')
         gtdb.exec_sql_in("""INSERT INTO fsgenes (
                id, user_id, seq_id, name, fs_coord,    type, start,  end,    strand, source)
-        """,db_id, user_id, seq_id, name, fs_coord, fs_type, start1, end2, f.strand, source
+        """,db_id, user_id, seq.id, name, fs_coord, fs_type, start1, end2, f.strand, source
         )
         
         return db_id
     
-    #---
     @staticmethod
-    def set_fsgene_sfeats(gtdb, fsgene_id, sfeat_list):
+    def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
+        up_len_nt = fs_coord - start
+        down_len_nt = end - fs_coord
+        if strand == -1:
+            up_len_nt, down_len_nt = down_len_nt, up_len_nt
         
-        # Remove old sfeat links
-        gtdb.exec_sql_nr('delete from fsgene_sfeats where fsgene_id=%s', fsgene_id)
+        if up_len_nt % 3 != 0:
+            fmt = "The length (%d) of the upstream part is not divisible by 3 for fs-gene: %d-%d-%d (strand=%d)"
+            raise Exception(fmt % (up_len_nt, start, fs_coord, end, strand))
         
-        sfeat_descr_l = []
-        for sfeat_id in sfeat_list:
-            gtdb.exec_sql_in('INSERT INTO fsgene_sfeats (fsgene_id, sfeat_id)', fsgene_id, sfeat_id)
-            sfeat = SFeat(gtdb, sfeat_id)
-            if sfeat.descr is not None:
-                sfeat_descr_l.append(sfeat.descr)
+        # Take into account fs-type if the FS position is in a middle of codon.
+        # Round down (int(1.9) is 1) fs-coord to avoid stop codon in such cases: aaa_tgA_CCC
+        if up_len_nt % 3 != 0:
+            up_len_nt = 3 * int(up_len_nt/3 + 1)                 # round by the whole number of codons
+            down_len_nt = 3 * int((down_len_nt - fs_type)/3)     # back-FS increases the C-part length
         
-        # Update fsgene descr
-        fsgene_descr = None
-        if len(sfeat_descr_l) > 0:
-            fsgene_descr = '|'.join(sfeat_descr_l)
-        gtdb.exec_sql_nr('update fsgenes set descr=%s where id=%s', fsgene_descr, fsgene_id)
-
+        chunk_nt = seq[start:end]
+        if strand == -1:
+            chunk_nt = chunk_nt.reverse_complement()
+        
+        up_chunk_nt = chunk_nt[:up_len_nt]
+        down_chunk_nt = chunk_nt[-down_len_nt:]
+        prot_seq_n = up_chunk_nt.translate(table = seq.prm['transl_table'])
+        prot_seq_c = down_chunk_nt.translate(table = seq.prm['transl_table'])
+        prot_seq_c = prot_seq_c.rstrip('*')  # removing a stop codon at the end
+        
+        return {
+            'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
+            'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
+        }
+    
+    @staticmethod
+    def _validate_SeqFeature(f):
+        if not isinstance(f.location, CompoundLocation):
+            return "Feature location is not a CompoundLocation object: '{}'".format(str(f.location))
+        if len(f.location.parts) != 2:
+            return "CompoundLocation '{}' has '{}' parts!".format(str(f.location), len(f.location.parts))
+        if f.location.operator != 'join':
+            return "Wrong feature location operator = '{}'".format(f.location.operator)
+        if f.location.strand is None:
+            return "The parts of CompoundLocation have different strands = '{}'".format(f.location)
+        return None
 
 
 def make_new_fullpath_for_basename(subdir, basename):
@@ -386,12 +495,23 @@ def make_new_fullpath_for_basename(subdir, basename):
         num += 1
     return full_path
 
-#---
+def _get_genetic_code_from_SeqRecord(record):
+    all_transl_f = list(filter(lambda f: 'transl_table' in f.qualifiers, record.features))
+    if len(all_transl_f) == 0:
+        logging.warning("Sequence '%s' doesn't have transl_table annotations", record.name)
+        return None
+    
+    all_transl_tables = [f.qualifiers['transl_table'][0] for f in all_transl_f]
+    transl_counts = Counter(all_transl_tables).most_common()  # https://stackoverflow.com/a/10797913/310453
+    if len(transl_counts) > 1:
+        logging.warning("Different genetic codes are annotated for seq: '%s'" % transl_counts)
+    
+    return transl_counts[0][0]
+
 def db_xref_list_to_dict(dbxrefs):
     dbx_ll = [str.split(':') for str in dbxrefs]   # list of lists
     return {l[0] : l[1] for l in dbx_ll}
 
-#---
 def _get_genus_phylum_kingdom(seq_record):
     taxa_l = seq_record.annotations.get('taxonomy')
     if taxa_l is None or len(taxa_l) < 3:

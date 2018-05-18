@@ -21,18 +21,18 @@ from mylib.local import PATH2
 
 
 class GeneTackDB(BaseUtilDB):
-    
-    #---
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.gtdb_dir = PATH2['gtdb2']
     
-    #---
     def add_param_to(self, unit, db_id, name, value=None, num=None):
-        sql = 'INSERT INTO {}_params ({}_id, name, value, num)'.format(unit,unit)
+        sql = 'INSERT INTO {0}_params ({0}_id, name, value, num)'.format(unit)
         self.exec_sql_in(sql, db_id, name, value, num)
     
-    #---
+    def delete_param(self, unit, db_id, name):
+        sql = 'delete from {0}_params where {0}_id=%s and name=%s'.format(unit)
+        self.exec_sql_nr(sql, db_id, name)
+    
     # Argument is the path RELATIVE to the GTDB dir
     def delete_file(self, fn):
         fn = os.path.join(self.gtdb_dir, fn)
@@ -41,7 +41,6 @@ class GeneTackDB(BaseUtilDB):
         else:
             logging.warning("File '%s' doesn't exist!" % fn)
     
-    #---
     # Argument is the path RELATIVE to the GTDB dir
     def delete_dir(self, path):
         path = os.path.join(self.gtdb_dir, path)
@@ -332,10 +331,18 @@ class SFeat(TableObject):
 
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
-        super().__init__(gtdb, db_id, """
+        self._unit = 'fsgene'
+        main_sql = """
             SELECT id, user_id, seq_id, fs_coord, type, start, end, strand, source
             FROM fsgenes WHERE id=%s
-        """)
+        """
+        TableObject.__init__(
+            self, gtdb, db_id, main_sql,
+            add_prm = True,
+            prm_str = ['prot_seq_n', 'prot_seq_c', 'nt_seq_n', 'nt_seq_c'],
+            prm_int = [],
+            prm_float = [],
+        )
     
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE fsgene_id=%s', self.id)
@@ -359,40 +366,143 @@ class FSGene(TableObject):
             fsgene_descr = ' | '.join(sfeat_descr_l)
         self.gtdb.exec_sql_nr('update fsgenes set descr=%s where id=%s', fsgene_descr, self.id)
     
-    def make_all_params(self, seq):
+    def make_all_params(self, seq=None):
+        if seq is None:
+            seq = Seq(self.gtdb, self.seq_id, read_seq=True)
         self.make_prm_seqs(seq)
         
     def make_prm_seqs(self, seq):
+        seq_dict = FSGene._get_prot_seq_parts(
+            self.start, self.end, self.strand, self.fs_coord, self.type, seq
+        )
+        
         prm_names = ['prot_seq_n', 'prot_seq_c', 'nt_seq_n', 'nt_seq_c']
-        
-        if seq is None:
-            seq = Seq(self.gtdb, self.seq_id, read_seq=True)
-        
-        up_len_nt = self.fs_coord - self.start
-        down_len_nt = self.end - self.fs_coord
-        if self.strand == -1:
+        for name in prm_names:
+            self.gtdb.delete_param(self._unit, self.id, name)
+            self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name])
+    
+    def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
+        up_len_nt = fs_coord - start
+        down_len_nt = end - fs_coord
+        if strand == -1:
             up_len_nt, down_len_nt = down_len_nt, up_len_nt
         
-        print('BEFORE', up_len_nt, down_len_nt)
-        # Take into account fs-type if the FS position is in a middle of codon.
-        # Round down (int(1.9) is 1) fs-coord to avoid stop codon in such cases: aaa_tgA_CCC
-        if up_len_nt % 3 != 0:
-            up_len_nt = 3 * int(up_len_nt/3 + 1)                 # round by the whole number of codons
-            down_len_nt = 3 * int((down_len_nt - self.type)/3)   # back-FS increases the C-part length
+        # Backward frameshiting increases the length of the C-terminal part of the fs-protein
+        down_len_nt -= fs_type
         
-        print('AFTER', up_len_nt, down_len_nt)
-        pprint(vars(self))
+        if up_len_nt % 3 != 0 or down_len_nt % 3 != 0:
+            fmt = """
+            The length (%d) of the upstream / downstream fsgene part (%d / %d) is not divisible by 3:
+            start=%d, fs_coord=%d, end=%d, strand=%d
+            """
+            raise Exception(fmt % (up_len_nt, down_len_nt, start, fs_coord, end, strand))
         
-        chunk_nt = seq[self.start:self.end]
-        if self.strand == -1:
+        chunk_nt = seq[start:end]
+        if strand == -1:
             chunk_nt = chunk_nt.reverse_complement()
         
         up_chunk_nt = chunk_nt[:up_len_nt]
         down_chunk_nt = chunk_nt[-down_len_nt:]
-        prot_seq_n = up_chunk_nt.translate(table=11)
-        prot_seq_c = down_chunk_nt.translate(table=11).rstrip('*')  # removing a stop codon at the end
-        print(prot_seq_n, prot_seq_c, up_len_nt, down_len_nt)
-        sys.exit()
+        prot_seq_n = up_chunk_nt.translate(table = seq.prm['transl_table'])
+        prot_seq_c = down_chunk_nt.translate(table = seq.prm['transl_table'])
+        prot_seq_c = prot_seq_c.rstrip('*')  # remove possible stop codon at the end
+        
+        if '*' in prot_seq_n or '*' in prot_seq_c:
+            raise Exception("FS-prot seq contains in-frame stop codon:\n%s\n\n%s", (prot_seq_n, prot_seq_c))
+        
+        return {
+            'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
+            'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
+        }
+    
+    @staticmethod
+    def create_new_in_db_from_GT_FS(gtdb, fs_id, source='genetack'):
+        fs, seq = FSGene._get_info_about_GT_FS(gtdb, fs_id)
+        
+        # If up_len_nt is not divisible by 3 => the FS was predicted in a middle of codon.
+        # Move the fs-coord upstream (not downstrem) to avoid stop codon in cases like 'aaa_tgA_CCC'.
+        adjust_len = fs['up_len_nt'] % 3
+        if fs['strand'] == 1:
+            fs['fs_coord'] -= adjust_len
+        else:
+            fs['fs_coord'] += adjust_len
+        
+        fsgene_id = FSGene.create_new_in_db(
+            gtdb, seq, fs['user_id'], fs['start'], fs['end'], fs['strand'], fs['fs_coord'], fs['type'],
+            source=source, cof_id=fs['cof_id'], c_date=fs['c_date'], db_id=fs_id
+        )
+        
+        FSGene(gtdb, fsgene_id).make_all_params(seq)
+        
+        return fsgene_id
+    
+    @staticmethod
+    def create_new_in_db(gtdb, seq, user_id, start, end, strand, fs_coord, fs_type,
+                         source=None, cof_id=None, c_date=None, db_id=None):
+        # make name like: 'NC_010002.1:1922457:-1'
+        name = '%s:%d:%+d' % (seq.ext_id, fs_coord, fs_type)
+        
+        if db_id is None:
+            db_id = gtdb.get_random_db_id('fsgenes', 'id')
+        
+        gtdb.exec_sql_in("""INSERT INTO fsgenes (
+               id, c_date, user_id, seq_id, name, fs_coord,    type, start, end, strand, source, cof_id)
+        """,db_id, c_date, user_id, seq.id, name, fs_coord, fs_type, start, end, strand, source, cof_id
+        )
+        
+        return db_id
+    
+    @staticmethod
+    def _get_info_about_GT_FS(gtdb, fs_id):
+        res = gtdb.exec_sql_ar("""
+            select f.fs_id, j.user_id, j.c_date, s.id AS seq_id, s.ext_id AS seq_ext_id,
+                   f.fs_coord, f.type, f.init_gene_seq,
+                   IF(f.strand = "+", 1, -1) AS strand,
+                   (select cof_id from cof_gtfs cg where cg.fs_id = f.fs_id limit 1) AS cof_id
+            from gt_fs f, jobs j, seqs s
+            where j.job_id=f.job_id
+            and s.name = j.name
+            and f.fs_id = %s
+        """, fs_id
+        )
+        if len(res) == 0:
+            logging.warning("Can't get info about FS_ID = '%s'" % fs_id)
+            return None
+        elif not res[0]['seq_ext_id'].endswith('.1'):
+            logging.warning("Sequence '%s' has wrong version!" % res[0]['seq_ext_id'])
+            return None
+        else:
+            fs = res[0]
+            fs['type'] = int(fs['type'])
+        
+        if fs['strand'] == -1:
+            fs['fs_coord'] -= 1   # switch to zero-based coordinate system?
+        
+        up_match = re.compile('^[a-z]+').search(fs['init_gene_seq'])
+        down_match = re.compile('[A-Z]+$').search(fs['init_gene_seq'])
+        if up_match is None or down_match is None:
+            logging.warning("Wrong fsgene sequence '%s'" % fs['init_gene_seq'])
+            return None
+        fs['up_len_nt'] = up_match.end() - up_match.start()
+        fs['down_len_nt'] = down_match.end() - down_match.start()
+        
+        if fs['strand'] == 1:
+            fs['start'] = fs['fs_coord'] - fs['up_len_nt']
+            fs['end'] = fs['fs_coord'] + fs['down_len_nt']
+        else:
+            fs['start'] = fs['fs_coord'] - fs['down_len_nt']
+            fs['end'] = fs['fs_coord'] + fs['up_len_nt']
+        
+        seq = Seq(gtdb, fs['seq_id'], read_seq=True)
+        fsgene_seq = seq[fs['start']:fs['end']]
+        if fs['strand'] == -1:
+            fsgene_seq = fsgene_seq.reverse_complement()
+        
+        if fsgene_seq.upper() != fs['init_gene_seq'].upper():
+            logging.warning("GT_FS and fsgene sequence do not match:\n%s\n%s" % (fs['init_gene_seq'], fsgene_seq))
+            return None
+        
+        return fs, seq
     
     @staticmethod
     def create_new_in_db_from_SeqFeature(gtdb, f, seq, user_id, source=None):
@@ -423,48 +533,7 @@ class FSGene(TableObject):
                 fmt = "\nThe true and reconstructed fs-prot seqs do not match:\n%s\n%s\n"
                 raise Exception(fmt % (true_prot, my_prot))
         
-        # make name like: 'NC_010002.1:1922457:-1'
-        name = '%s:%d:%+d' % (seq.ext_id, fs_coord, fs_type)
-        
-        db_id = gtdb.get_random_db_id('fsgenes', 'id')
-        gtdb.exec_sql_in("""INSERT INTO fsgenes (
-               id, user_id, seq_id, name, fs_coord,    type, start,  end,    strand, source)
-        """,db_id, user_id, seq.id, name, fs_coord, fs_type, start1, end2, f.strand, source
-        )
-        
         return db_id
-    
-    @staticmethod
-    def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
-        up_len_nt = fs_coord - start
-        down_len_nt = end - fs_coord
-        if strand == -1:
-            up_len_nt, down_len_nt = down_len_nt, up_len_nt
-        
-        if up_len_nt % 3 != 0:
-            fmt = "The length (%d) of the upstream part is not divisible by 3 for fs-gene: %d-%d-%d (strand=%d)"
-            raise Exception(fmt % (up_len_nt, start, fs_coord, end, strand))
-        
-        # Take into account fs-type if the FS position is in a middle of codon.
-        # Round down (int(1.9) is 1) fs-coord to avoid stop codon in such cases: aaa_tgA_CCC
-        if up_len_nt % 3 != 0:
-            up_len_nt = 3 * int(up_len_nt/3 + 1)                 # round by the whole number of codons
-            down_len_nt = 3 * int((down_len_nt - fs_type)/3)     # back-FS increases the C-part length
-        
-        chunk_nt = seq[start:end]
-        if strand == -1:
-            chunk_nt = chunk_nt.reverse_complement()
-        
-        up_chunk_nt = chunk_nt[:up_len_nt]
-        down_chunk_nt = chunk_nt[-down_len_nt:]
-        prot_seq_n = up_chunk_nt.translate(table = seq.prm['transl_table'])
-        prot_seq_c = down_chunk_nt.translate(table = seq.prm['transl_table'])
-        prot_seq_c = prot_seq_c.rstrip('*')  # removing a stop codon at the end
-        
-        return {
-            'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
-            'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
-        }
     
     @staticmethod
     def _validate_SeqFeature(f):

@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import shutil
+import datetime
 from pprint import pprint
 from collections import Counter
 
@@ -12,10 +13,11 @@ import Bio.Alphabet
 import Bio.Seq
 from Bio import SeqIO
 #from Bio.Seq import Seq as BioSeq
-from Bio.SeqFeature import CompoundLocation
+from Bio.SeqFeature import FeatureLocation, CompoundLocation
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import GC
 
+from mylib.baseutilbio import get_FeatureLocation_overlap_len
 from mylib.baseutildb import BaseUtilDB
 from mylib.local import PATH2
 
@@ -333,7 +335,8 @@ class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
         self._unit = 'fsgene'
         main_sql = """
-            SELECT id, user_id, seq_id, fs_coord, type, start, end, strand, source
+            SELECT id, user_id, c_date, seq_id, cof_id, name, descr,
+                   fs_coord, type, start, end, strand, source
             FROM fsgenes WHERE id=%s
         """
         TableObject.__init__(
@@ -348,6 +351,25 @@ class FSGene(TableObject):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_params WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgenes       WHERE        id=%s', self.id)
+    
+    def set_sfeats_from_genbank(self):
+        seq = Seq(self.gtdb, self.seq_id)
+        gb_fn = os.path.join(self.gtdb.gtdb_dir, seq.prm['gbk_path'])
+        record = SeqIO.read(gb_fn, "genbank")
+        
+        fsgene_loc = FeatureLocation(self.start, self.end, self.strand)
+        all_sfeats = []
+        for f in record.features:
+            if f.type != 'CDS':
+                continue
+            if get_FeatureLocation_overlap_len(f.location, fsgene_loc) < 30:
+                continue
+            sfeat_id = SFeat.create_new_in_db_from_SeqFeature(self.gtdb, f, self.seq_id)
+            all_sfeats.append(sfeat_id)
+        
+        if self.strand < 0:
+            all_sfeats.reverse()
+        self.set_sfeats(all_sfeats)
     
     def set_sfeats(self, sfeat_list):
         # Remove old sfeat links
@@ -420,37 +442,48 @@ class FSGene(TableObject):
         fs, seq = FSGene._get_info_about_GT_FS(gtdb, fs_id)
         
         # If up_len_nt is not divisible by 3 => the FS was predicted in a middle of codon.
-        # Move the fs-coord upstream (not downstrem) to avoid stop codon in cases like 'aaa_tgA_CCC'.
+        # Move the fs-coord upstream to avoid stop codon in cases like 'aaa_tgA_CCC'.
         adjust_len = fs['up_len_nt'] % 3
         if fs['strand'] == 1:
             fs['fs_coord'] -= adjust_len
         else:
             fs['fs_coord'] += adjust_len
         
-        fsgene_id = FSGene.create_new_in_db(
-            gtdb, seq, fs['user_id'], fs['start'], fs['end'], fs['strand'], fs['fs_coord'], fs['type'],
+        fsgene = FSGene.create_new_in_db(
+            gtdb, seq.id, fs['user_id'], fs['start'], fs['end'], fs['strand'], fs['fs_coord'], fs['type'],
             source=source, cof_id=fs['cof_id'], c_date=fs['c_date'], db_id=fs_id
         )
         
-        FSGene(gtdb, fsgene_id).make_all_params(seq)
-        
-        return fsgene_id
+        return fsgene
     
     @staticmethod
-    def create_new_in_db(gtdb, seq, user_id, start, end, strand, fs_coord, fs_type,
+    def create_new_in_db(gtdb, seq_id, user_id, start, end, strand, fs_coord, fs_type,
                          source=None, cof_id=None, c_date=None, db_id=None):
+        seq = Seq(gtdb, seq_id)
+        
         # make name like: 'NC_010002.1:1922457:-1'
         name = '%s:%d:%+d' % (seq.ext_id, fs_coord, fs_type)
         
         if db_id is None:
             db_id = gtdb.get_random_db_id('fsgenes', 'id')
+        if c_date is None:
+            c_date = datetime.datetime.now()
         
-        gtdb.exec_sql_in("""INSERT INTO fsgenes (
-               id, c_date, user_id, seq_id, name, fs_coord,    type, start, end, strand, source, cof_id)
-        """,db_id, c_date, user_id, seq.id, name, fs_coord, fs_type, start, end, strand, source, cof_id
+        gtdb.exec_sql_in(
+            """
+            INSERT INTO fsgenes (
+            id, c_date, user_id, seq_id, name, fs_coord, type,
+            start, end, strand, source, cof_id)
+            """, db_id, c_date, user_id, seq.id, name, fs_coord, fs_type,
+            start, end, strand, source, cof_id
         )
         
-        return db_id
+        fsgene = FSGene(gtdb, db_id)
+        fsgene.make_all_params()
+        fsgene.set_sfeats_from_genbank()
+        
+        logging.info("New fsgene '%s' has beed created with id '%d'" % (fsgene.name, fsgene.id))
+        return fsgene
     
     @staticmethod
     def _get_info_about_GT_FS(gtdb, fs_id):
@@ -546,7 +579,21 @@ class FSGene(TableObject):
         if f.location.strand is None:
             return "The parts of CompoundLocation have different strands = '{}'".format(f.location)
         return None
-
+    
+    @staticmethod
+    def get_ids_for_seq_coords(gtdb, seq_id, left, right):
+        return [d['id'] for d in gtdb.exec_sql_ar(
+            """
+            select distinct id from fsgenes
+            where seq_id={S}
+            and (
+            ({L} <= start AND end <= {R}) OR
+            ({L} <= start AND {R} <= end) OR
+            (start <= {L} AND end <= {R}) OR
+            (start <= {L} AND {R} <= end)
+            )
+            """.format(S=seq_id, L=left, R=right)
+        )]
 
 def make_new_fullpath_for_basename(subdir, basename):
     """Returns a full path to create a new file or folder"""

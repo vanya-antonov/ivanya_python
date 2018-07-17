@@ -414,10 +414,10 @@ class FSGene(TableObject):
         
         if up_len_nt % 3 != 0 or down_len_nt % 3 != 0:
             fmt = """
-            The length (%d) of the upstream / downstream fsgene part (%d / %d) is not divisible by 3:
-            start=%d, fs_coord=%d, end=%d, strand=%d
+            The length of the upstream or downstream fsgene part (%d / %d) is not divisible by 3:
+            start=%d, end=%d, fs_coord=%d, fs_type=%+d, strand=%d
             """
-            raise Exception(fmt % (up_len_nt, down_len_nt, start, fs_coord, end, strand))
+            raise Exception(fmt % (up_len_nt, down_len_nt, start, end, fs_coord, fs_type, strand))
         
         chunk_nt = seq[start:end]
         if strand == -1:
@@ -430,7 +430,7 @@ class FSGene(TableObject):
         prot_seq_c = prot_seq_c.rstrip('*')  # remove possible stop codon at the end
         
         if '*' in prot_seq_n or '*' in prot_seq_c:
-            raise Exception("FS-prot seq contains in-frame stop codon:\n%s\n\n%s", (prot_seq_n, prot_seq_c))
+            raise Exception("FS-prot seq contains in-frame stop codon:\n%s\n\n%s" % (prot_seq_n, prot_seq_c))
         
         return {
             'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),

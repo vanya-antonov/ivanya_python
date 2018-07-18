@@ -391,6 +391,15 @@ class FSGene(TableObject):
     def make_all_params(self, seq=None):
         if seq is None:
             seq = Seq(self.gtdb, self.seq_id, read_seq=True)
+        
+        # make name like: 'NC_010002.1:1922457:-1'
+        if self.type == 0:
+            # to avoid 'NC_005085.1:1684916:+0'
+            name = '%s:%d:%d'  % (seq.ext_id, self.fs_coord, self.type)
+        else:
+            name = '%s:%d:%+d' % (seq.ext_id, self.fs_coord, self.type)
+        self.gtdb.exec_sql_nr('update fsgenes set name=%s where id=%s', name, self.id)
+        
         self.make_prm_seqs(seq)
         
     def make_prm_seqs(self, seq):
@@ -459,11 +468,6 @@ class FSGene(TableObject):
     @staticmethod
     def create_new_in_db(gtdb, seq_id, user_id, start, end, strand, fs_coord, fs_type,
                          source=None, cof_id=None, c_date=None, db_id=None):
-        seq = Seq(gtdb, seq_id)
-        
-        # make name like: 'NC_010002.1:1922457:-1'
-        name = '%s:%d:%+d' % (seq.ext_id, fs_coord, fs_type)
-        
         if db_id is None:
             db_id = gtdb.get_random_db_id('fsgenes', 'id')
         if c_date is None:
@@ -472,9 +476,9 @@ class FSGene(TableObject):
         gtdb.exec_sql_in(
             """
             INSERT INTO fsgenes (
-            id, c_date, user_id, seq_id, name, fs_coord, type,
+            id, c_date, user_id, seq_id, fs_coord, type,
             start, end, strand, source, cof_id)
-            """, db_id, c_date, user_id, seq.id, name, fs_coord, fs_type,
+            """, db_id, c_date, user_id, seq_id, fs_coord, fs_type,
             start, end, strand, source, cof_id
         )
         
@@ -482,7 +486,7 @@ class FSGene(TableObject):
         fsgene.make_all_params()
         fsgene.set_sfeats_from_genbank()
         
-        logging.info("New fsgene '%s' has beed created with id '%d'" % (fsgene.name, fsgene.id))
+        logging.info("New fsgene has beed created with id '%d'" % fsgene.id)
         return fsgene
     
     @staticmethod

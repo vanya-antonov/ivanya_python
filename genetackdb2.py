@@ -407,7 +407,8 @@ class FSGene(TableObject):
             self.start, self.end, self.strand, self.fs_coord, self.type, seq
         )
         
-        prm_names = ['prot_seq_n', 'prot_seq_c', 'nt_seq_n', 'nt_seq_c']
+        prm_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
+                     'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
         for name in prm_names:
             self.gtdb.delete_param(self._unit, self.id, name)
             self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name])
@@ -443,7 +444,9 @@ class FSGene(TableObject):
         
         return {
             'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
+            'nt_seq_corr': up_chunk_nt.lower() + down_chunk_nt.upper(),
             'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
+            'prot_seq': prot_seq_n.lower() + prot_seq_c.upper(),
         }
     
     @staticmethod

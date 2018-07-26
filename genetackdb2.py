@@ -339,10 +339,12 @@ class FSGene(TableObject):
                    fs_coord, type, start, end, strand, source
             FROM fsgenes WHERE id=%s
         """
+        self._prm_seq_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
+                               'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
         TableObject.__init__(
             self, gtdb, db_id, main_sql,
             add_prm = True,
-            prm_str = ['prot_seq_n', 'prot_seq_c', 'nt_seq_n', 'nt_seq_c'],
+            prm_str = self._prm_seq_names,
             prm_int = [],
             prm_float = [],
         )
@@ -407,9 +409,7 @@ class FSGene(TableObject):
             self.start, self.end, self.strand, self.fs_coord, self.type, seq
         )
         
-        prm_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
-                     'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
-        for name in prm_names:
+        for name in self._prm_seq_names:
             self.gtdb.delete_param(self._unit, self.id, name)
             self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name])
     

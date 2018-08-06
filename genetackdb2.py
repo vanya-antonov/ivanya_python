@@ -405,13 +405,13 @@ class FSGene(TableObject):
         self.make_prm_seqs(seq)
         
     def make_prm_seqs(self, seq):
-        seq_dict = FSGene._get_prot_seq_parts(
-            self.start, self.end, self.strand, self.fs_coord, self.type, seq
-        )
+        seq_dict = FSGene._get_prot_seq_parts(self.start, self.end, self.strand,
+                                              self.fs_coord, self.type, seq)
         
         for name in self._prm_seq_names:
             self.gtdb.delete_param(self._unit, self.id, name)
-            self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name])
+            self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name],
+                                   num=len(seq_dict[name]))
     
     def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
         up_len_nt = fs_coord - start

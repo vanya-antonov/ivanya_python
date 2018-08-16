@@ -203,6 +203,9 @@ class Seq(TableObject, Bio.Seq.Seq):
             else:
                 self._has_seq = True
     
+    def read_genbank_file(self):
+        gb_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['gbk_path'])
+        return SeqIO.read(gb_fn, "genbank")
     
     def delete_from_db(self):
         for d in self.gtdb.exec_sql_ar('select id from fsgenes where seq_id=%s', self.id):
@@ -300,19 +303,34 @@ class SFeat(TableObject):
         self.gtdb.exec_sql_nr('DELETE FROM sfeats        WHERE       id=%s', self.id)
     
     @staticmethod
-    def create_new_in_db_from_SeqFeature(gtdb, f, seq_id):
+    def create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f_type,
+                         name=None, descr=None, ext_id=None):
+        db_id = gtdb.get_random_db_id('sfeats', 'id')
+        gtdb.exec_sql_in("""INSERT INTO sfeats (
+               id, user_id, seq_id,   type, start, end, strand, name, descr, ext_id)
+        """,db_id, user_id, seq_id, f_type, start, end, strand, name, descr, ext_id
+        )
+        
+        logging.info("New SFEAT has beed created with id '%d'" % db_id)
+        return db_id
+    
+    @staticmethod
+    def create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f):
         start   = int(f.location.start)
         end     = int(f.location.end)
         strand  = f.location.strand
-        name    = f.qualifiers.get('gene',      [None])[0]
-        descr   = f.qualifiers.get('product',   [None])[0]
-        ext_id  = f.qualifiers.get('locus_tag', [None])[0]
         
-        db_id = gtdb.get_random_db_id('sfeats', 'id')
-        gtdb.exec_sql_in("""INSERT INTO sfeats (
-               id, seq_id,   type, start, end, strand, name, descr, ext_id)
-        """,db_id, seq_id, f.type, start, end, strand, name, descr, ext_id
-        )
+        # Check if this feature already exists!
+        res_l = gtdb.exec_sql_ar('''SELECT id FROM sfeats WHERE start=%s and end=%s and strand=%s''',
+                                 start, end, strand)
+        if len(res_l) > 0:
+            logging.warning('SeqFeature %s already present in DB: %s' % (res_l[0]['id'], f))
+            return res_l[0]['id']
+        
+        db_id = SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
+                                       name = f.qualifiers.get('gene', [None])[0],
+                                       descr = f.qualifiers.get('product', [None])[0],
+                                       ext_id = f.qualifiers.get('locus_tag', [None])[0])
         
         # SFEAT_PARAMS
         prm_keys = [
@@ -329,7 +347,43 @@ class SFeat(TableObject):
             gtdb.add_param_to('sfeat', db_id, name, value)
         
         return db_id
-
+    
+    @staticmethod
+    def create_new_in_db_from_gbk_for_region(gtdb, user_id, seq_id, start, end, strand, record=None,
+                                             min_overlap=1, mult_sfeats='all'):
+        '''Load features from GenBank file that overlap with the given target region.
+        Arguments:
+            - record - Biopython GenBank record object
+            - mult_sfeats - what to do if the region overlaps with multiple features.
+              Valid values: all, longest
+        '''
+        if record is None:
+            record = Seq(gtdb, seq_id).read_genbank_file()
+        
+        target_loc = FeatureLocation(start, end, strand)
+        overlapping_feats = []
+        for f in record.features:
+            if f.type != 'CDS':
+                continue
+            f._overlap_len = get_FeatureLocation_overlap_len(f.location, target_loc)
+            if f._overlap_len >= min_overlap:
+                overlapping_feats.append(f)
+        
+        if len(overlapping_feats) == 0:
+            return []
+        
+        if mult_sfeats == 'longest':
+            max_overlap = max([f._overlap_len for f in overlapping_feats])
+            for f in overlapping_feats:
+                if f._overlap_len == max_overlap:
+                    overlapping_feats = [f]
+                    break
+        
+        sfeat_ids = []
+        for f in overlapping_feats:
+            sfeat_ids.append(SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f))
+        
+        return sfeat_ids
 
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
@@ -348,37 +402,24 @@ class FSGene(TableObject):
             prm_int = [],
             prm_float = [],
         )
-    
+
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_params WHERE fsgene_id=%s', self.id)
         self.gtdb.exec_sql_nr('DELETE FROM fsgenes       WHERE        id=%s', self.id)
     
     def set_sfeats_from_genbank(self):
-        seq = Seq(self.gtdb, self.seq_id)
-        gb_fn = os.path.join(self.gtdb.gtdb_dir, seq.prm['gbk_path'])
-        record = SeqIO.read(gb_fn, "genbank")
-        
-        fsgene_loc = FeatureLocation(self.start, self.end, self.strand)
-        all_sfeats = []
-        for f in record.features:
-            if f.type != 'CDS':
-                continue
-            if get_FeatureLocation_overlap_len(f.location, fsgene_loc) < 30:
-                continue
-            sfeat_id = SFeat.create_new_in_db_from_SeqFeature(self.gtdb, f, self.seq_id)
-            all_sfeats.append(sfeat_id)
+        all_sfeat_ids = SFeat.create_new_in_db_from_gbk_for_region(
+            self.gtdb, self.user_id, self.seq_id, self.start, self.end, self.strand, min_overlap=30)
         
         if self.strand < 0:
-            all_sfeats.reverse()
-        self.set_sfeats(all_sfeats)
-    
-    def set_sfeats(self, sfeat_list):
+            all_sfeat_ids.reverse()
+        
         # Remove old sfeat links
         self.gtdb.exec_sql_nr('delete from fsgene_sfeats where fsgene_id=%s', self.id)
         
         sfeat_descr_l = []
-        for sfeat_id in sfeat_list:
+        for sfeat_id in all_sfeat_ids:
             self.gtdb.exec_sql_in('INSERT INTO fsgene_sfeats (fsgene_id, sfeat_id)', self.id, sfeat_id)
             sfeat = SFeat(self.gtdb, sfeat_id)
             if sfeat.descr is not None:
@@ -394,13 +435,16 @@ class FSGene(TableObject):
         if seq is None:
             seq = Seq(self.gtdb, self.seq_id, read_seq=True)
         
-        # make name like: 'NC_010002.1:1922457:-1'
+        # make NAME like: 'NC_010002.1:1922457:-1'
         if self.type == 0:
             # to avoid 'NC_005085.1:1684916:+0'
             name = '%s:%d:%d'  % (seq.ext_id, self.fs_coord, self.type)
         else:
             name = '%s:%d:%+d' % (seq.ext_id, self.fs_coord, self.type)
         self.gtdb.exec_sql_nr('update fsgenes set name=%s where id=%s', name, self.id)
+        
+        # make DESCR like 'magnesium chelatase | VWA domain-containing protein'
+        self.set_sfeats_from_genbank()
         
         self.make_prm_seqs(seq)
         
@@ -487,7 +531,6 @@ class FSGene(TableObject):
         
         fsgene = FSGene(gtdb, db_id)
         fsgene.make_all_params()
-        fsgene.set_sfeats_from_genbank()
         
         logging.info("New fsgene has beed created with id '%d'" % fsgene.id)
         return fsgene
@@ -545,7 +588,7 @@ class FSGene(TableObject):
         return fs, seq
     
     @staticmethod
-    def create_new_in_db_from_SeqFeature(gtdb, f, seq, user_id, source=None):
+    def create_new_in_db_from_Seq_Feature(gtdb, f, seq, user_id, source=None):
         error = FSGene._validate_SeqFeature(f)
         if error is not None:
             logging.warning(error)

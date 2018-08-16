@@ -334,13 +334,16 @@ class SFeat(TableObject):
         
         # SFEAT_PARAMS
         prm_keys = [
-            'translation', 'protein_id', 'ribosomal_slippage', 'pseudo', 'experiment',
-            'EC_number', 'gene_synonym', 'function', 'regulatory_class', 'ncRNA_class',
-        ]
+            'protein_id', 'ribosomal_slippage', 'pseudo', 'experiment',
+            'EC_number', 'gene_synonym', 'function', 'regulatory_class', 'ncRNA_class']
         for k, vals in f.qualifiers.items():
             if k in prm_keys:
                 for v in vals:
                     gtdb.add_param_to('sfeat', db_id, k, v)
+        
+        for prot_seq in f.qualifiers.get('translation', []):
+            gtdb.add_param_to('sfeat', db_id, 'translation',
+                             value=prot_seq, num=len(prot_seq))
         
         dbx_dict = db_xref_list_to_dict(f.qualifiers.get('db_xref', []))
         for (name,value) in dbx_dict.items():

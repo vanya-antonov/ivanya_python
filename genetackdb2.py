@@ -27,6 +27,10 @@ class GeneTackDB(BaseUtilDB):
         super().__init__(**kwargs)
         self.gtdb_dir = PATH2['gtdb2']
     
+    def set_param_to(self, unit, db_id, name, **kwargs):
+        self.delete_param(unit, db_id, name)
+        self.add_param_to(unit, db_id, name, **kwargs)
+    
     def add_param_to(self, unit, db_id, name, value=None, num=None):
         sql = 'INSERT INTO {0}_params ({0}_id, name, value, num)'.format(unit)
         self.exec_sql_in(sql, db_id, name, value, num)

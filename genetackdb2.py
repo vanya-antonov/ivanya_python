@@ -529,25 +529,27 @@ class FSGene(TableObject):
     @staticmethod
     def create_new_in_db(gtdb, seq_id, user_id, start, end, strand, fs_coord, fs_type,
                          source=None, cof_id=None, c_date=None, db_id=None):
+        # check if fsgene already exists in this location
+        existing_fsgenes = FSGene.get_ids_for_seq_coords(
+            gtdb, seq_id, start, end)
+        if len(existing_fsgenes) > 0:
+            logging.warning("FSGene '%d' already exists for coords %d-%d" %
+                            (existing_fsgenes[0], start, end))
+            return None
+        
         if db_id is None:
             db_id = gtdb.get_random_db_id('fsgenes', 'id')
         if c_date is None:
             c_date = datetime.datetime.now()
         
-        gtdb.exec_sql_in(
-            """
+        gtdb.exec_sql_in("""
             INSERT INTO fsgenes (
             id, c_date, user_id, seq_id, fs_coord, type,
             start, end, strand, source, cof_id)
             """, db_id, c_date, user_id, seq_id, fs_coord, fs_type,
-            start, end, strand, source, cof_id
-        )
+            start, end, strand, source, cof_id)
         
-        fsgene = FSGene(gtdb, db_id)
-        fsgene.make_all_params()
-        
-        logging.info("New fsgene has beed created with id '%d'" % fsgene.id)
-        return fsgene
+        return FSGene(gtdb, db_id)
     
     @staticmethod
     def _get_info_about_GT_FS(gtdb, fs_id):

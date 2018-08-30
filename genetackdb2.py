@@ -316,7 +316,7 @@ class SFeat(TableObject):
         )
         
         logging.info("New SFEAT has beed created with id '%d'" % db_id)
-        return db_id
+        return SFeat(gtdb, db_id)
     
     @staticmethod
     def create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f):
@@ -329,12 +329,13 @@ class SFeat(TableObject):
                                  start, end, strand)
         if len(res_l) > 0:
             logging.warning('SeqFeature %s already present in DB: %s' % (res_l[0]['id'], f))
-            return res_l[0]['id']
+            return SFeat(gtdb, res_l[0]['id'])
         
-        db_id = SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
+        sfeat = SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
                                        name = f.qualifiers.get('gene', [None])[0],
                                        descr = f.qualifiers.get('product', [None])[0],
                                        ext_id = f.qualifiers.get('locus_tag', [None])[0])
+        db_id = sfeat.id
         
         # SFEAT_PARAMS
         prm_keys = [
@@ -353,16 +354,15 @@ class SFeat(TableObject):
         for (name,value) in dbx_dict.items():
             gtdb.add_param_to('sfeat', db_id, name, value)
         
-        return db_id
+        return sfeat
     
     @staticmethod
     def create_new_in_db_from_gbk_for_region(gtdb, user_id, seq_id, start, end, strand, record=None,
-                                             min_overlap=1, mult_sfeats='all'):
+                                             min_overlap=1, max_sfeats=-1):
         '''Load features from GenBank file that overlap with the given target region.
         Arguments:
             - record - Biopython GenBank record object
-            - mult_sfeats - what to do if the region overlaps with multiple features.
-              Valid values: all, longest
+            - max_sfeats - maximum number of sfeats with longest overlaps to create
         '''
         if record is None:
             record = Seq(gtdb, seq_id).read_genbank_file()
@@ -379,18 +379,18 @@ class SFeat(TableObject):
         if len(overlapping_feats) == 0:
             return []
         
-        if mult_sfeats == 'longest':
-            max_overlap = max([f._overlap_len for f in overlapping_feats])
-            for f in overlapping_feats:
-                if f._overlap_len == max_overlap:
-                    overlapping_feats = [f]
-                    break
+        if max_sfeats > 0 and len(overlapping_feats) > max_sfeats:
+            # Sort by overlap_len: https://docs.python.org/3.6/howto/sorting.html
+            overlapping_feats = sorted(overlapping_feats, reverse=True,
+                                       key=lambda f: f._overlap_len)
+            # Take the longest feats only
+            overlapping_feats = overlapping_feats[0:max_sfeats]
         
-        sfeat_ids = []
+        all_sfeats = []
         for f in overlapping_feats:
-            sfeat_ids.append(SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f))
+            all_sfeats.append(SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f))
         
-        return sfeat_ids
+        return all_sfeats
 
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
@@ -416,19 +416,22 @@ class FSGene(TableObject):
         self.gtdb.exec_sql_nr('DELETE FROM fsgenes       WHERE        id=%s', self.id)
     
     def set_sfeats_from_genbank(self):
-        all_sfeat_ids = SFeat.create_new_in_db_from_gbk_for_region(
-            self.gtdb, self.user_id, self.seq_id, self.start, self.end, self.strand, min_overlap=30)
+        max_sfeats = 1 if self.type == 0 else 2
+        all_sfeats = SFeat.create_new_in_db_from_gbk_for_region(
+            self.gtdb, self.user_id, self.seq_id, self.start, self.end, self.strand,
+            max_sfeats=max_sfeats)
         
+        # Sort in the order of translation
+        all_sfeats = sorted(all_sfeats, key=lambda s: s.start)
         if self.strand < 0:
-            all_sfeat_ids.reverse()
+            all_sfeats.reverse()
         
         # Remove old sfeat links
         self.gtdb.exec_sql_nr('delete from fsgene_sfeats where fsgene_id=%s', self.id)
         
         sfeat_descr_l = []
-        for sfeat_id in all_sfeat_ids:
-            self.gtdb.exec_sql_in('INSERT INTO fsgene_sfeats (fsgene_id, sfeat_id)', self.id, sfeat_id)
-            sfeat = SFeat(self.gtdb, sfeat_id)
+        for sfeat in all_sfeats:
+            self.gtdb.exec_sql_in('INSERT INTO fsgene_sfeats (fsgene_id, sfeat_id)', self.id, sfeat.id)
             if sfeat.descr is not None:
                 sfeat_descr_l.append(sfeat.descr)
         
@@ -453,7 +456,11 @@ class FSGene(TableObject):
         # make DESCR like 'magnesium chelatase | VWA domain-containing protein'
         self.set_sfeats_from_genbank()
         
-        self.make_prm_seqs(seq)
+        try:
+            self.make_prm_seqs(seq)
+        except Exception as e:
+            logging.error("Couldn't generate prm_seqs for fsgene '%d':\n%s" %
+                          (self.id, e))
         
     def make_prm_seqs(self, seq):
         seq_dict = FSGene._get_prot_seq_parts(self.start, self.end, self.strand,

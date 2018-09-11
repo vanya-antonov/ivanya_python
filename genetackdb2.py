@@ -57,49 +57,59 @@ class GeneTackDB(BaseUtilDB):
 
 
 class TableObject:
-    
-    def __init__(self, gtdb, db_id, main_sql, add_prm=False,
-                 prm_str=[], prm_int=[], prm_float=[], prm_list=[]):
+    def __init__(self, gtdb, db_id, main_sql, add_prm=False, **kwargs):
         self.gtdb = gtdb
-        self.prm = {}
         
         res = gtdb.exec_sql_ar(main_sql, db_id)
         if len(res) == 0:
             raise Exception("Unknown db_id = '{}'".format(db_id))
         
-        # use dictionary keys as object arguments: https://stackoverflow.com/a/2466207/310453
+        # use dictionary keys as object arguments:
+        # https://stackoverflow.com/a/2466207/310453
         for k, v in res[0].items():
             setattr(self, k, v)
         
         # Load params if requested
+        self.prm = {}
         if add_prm:
-            prm_sql = 'select name, value, num from {0}_params where {0}_id=%s'.format(self._unit)
-            prm_res = gtdb.exec_sql_ar(prm_sql, db_id)
-            for d in prm_res:
-                if d['name'] in prm_list:
-                    if d['name'] not in self.prm:
-                        self.prm[d['name']] = []
-                    self.prm[d['name']].append(d)
-                elif d['name'] in self.prm:
-                    raise Exception("Param name '{}' is duplicated, but not in prm_list".format(d['name']))
-                
-                if d['name'] in prm_str:
-                    self.prm[d['name']] = d['value']
-                elif d['name'] in prm_int:
-                    self.prm[d['name']] = int(d['num'])
-                elif d['name'] in prm_float:
-                    self.prm[d['name']] = float(d['num'])
-                else:
-                    self.prm[d['name']] = d
-
+            self.load_prm(**kwargs)
+    
+    def load_prm(self, prm_str=[], prm_int=[], prm_float=[], prm_list=[]):
+        prm_sql = 'select name, value, num from {0}_params where {0}_id=%s'.format(
+            self._unit)
+        prm_res = self.gtdb.exec_sql_ar(prm_sql, self.id)
+        for d in prm_res:
+            if d['name'] in prm_list:
+                if d['name'] not in self.prm:
+                    self.prm[d['name']] = []
+                self.prm[d['name']].append(d)
+            elif d['name'] in prm_str:
+                self.prm[d['name']] = d['value']
+            elif d['name'] in prm_int:
+                self.prm[d['name']] = int(d['num'])
+            elif d['name'] in prm_float:
+                self.prm[d['name']] = float(d['num'])
+    
+    def set_param(self, name, **kwargs):
+        self.gtdb.delete_param(self._unit, self.id, name)
+        self.gtdb.add_param_to(self._unit, self.id, name, **kwargs)
 
 class Org(TableObject):
-    
     def __init__(self, gtdb, db_id):
-        super().__init__(gtdb, db_id, """
+        self._unit = 'org'
+        main_sql = """
             SELECT id, c_date, name, genus, phylum, kingdom, dir_path
-            FROM orgs WHERE id=%s
-        """)
+            FROM orgs WHERE id=%s"""
+        TableObject.__init__(
+            self, gtdb, db_id, main_sql,
+            add_prm = True,
+            prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn'],
+            prm_list = ['taxonomy'])
+        
+        # Modify prm['taxonomy']: list of dicts  =>  list of strings
+        if 'taxonomy' in self.prm:
+            self.prm['taxonomy'] = [d['value'] for d in sorted(
+                self.prm['taxonomy'], key=lambda d: d['num'])]
     
     def delete_from_db(self):
         for seq in self.gtdb.exec_sql_ar('select id from seqs where org_id=%s', self.id):
@@ -162,7 +172,6 @@ class Org(TableObject):
 
 
 class Seq(TableObject, Bio.Seq.Seq):
-    
     def __init__(self, gtdb, db_id, read_seq=False, use_seq=None):
         """Create Seq corresponding to the SEQ GeneTack DB table
 
@@ -294,7 +303,6 @@ class Seq(TableObject, Bio.Seq.Seq):
 
 
 class SFeat(TableObject):
-    
     def __init__(self, gtdb, db_id):
         super().__init__(gtdb, db_id, """
             SELECT id, seq_id, type, start, end, strand, name, descr, ext_id

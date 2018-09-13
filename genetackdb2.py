@@ -110,6 +110,11 @@ class Org(TableObject):
         if 'taxonomy' in self.prm:
             self.prm['taxonomy'] = [d['value'] for d in sorted(
                 self.prm['taxonomy'], key=lambda d: d['num'])]
+
+    def get_short_name(self):
+        '''e.g. 'Mycobacterium tuberculosis H37Rv'  => 'M.tuberculosis'
+        '''
+        return re.compile(r'^(\w)\w*\s+(\w+).*$').sub(r'\1.\2', self.name)
     
     def delete_from_db(self):
         for seq in self.gtdb.exec_sql_ar('select id from seqs where org_id=%s', self.id):

@@ -57,8 +57,9 @@ class GeneTackDB(BaseUtilDB):
 
 
 class TableObject:
-    def __init__(self, gtdb, db_id, main_sql, add_prm=False, **kwargs):
+    def __init__(self, gtdb, db_id, main_sql, unit, add_prm=False, **kwargs):
         self.gtdb = gtdb
+        self._unit = unit
         
         res = gtdb.exec_sql_ar(main_sql, db_id)
         if len(res) == 0:
@@ -93,15 +94,42 @@ class TableObject:
     def set_param(self, name, **kwargs):
         self.gtdb.delete_param(self._unit, self.id, name)
         self.gtdb.add_param_to(self._unit, self.id, name, **kwargs)
+    
+    def get_myself_and_all_parents(self):
+        '''Returns a dictionary with objects
+        '''
+        all_objs = {self._unit: self}
+        if 'fsgene' in all_objs.keys():
+            all_objs['seq'] = Seq(self.gtdb, all_objs['fsgene'].seq_id)
+        elif 'sfeat' in all_objs.keys():
+            all_objs['seq'] = Seq(self.gtdb, all_objs['sfeat'].seq_id)
+        
+        if 'seq' in all_objs.keys():
+            all_objs['org'] = Org(self.gtdb, all_objs['seq'].org_id)
+        
+        return all_objs
+    
+    @staticmethod
+    def object_for_unit(gtdb, unit, db_id):
+        unit = unit.lower()
+        if unit == 'org':
+            return Org(gtdb, db_id)
+        elif unit == 'seq':
+            return Seq(gtdb, db_id)
+        elif unit == 'sfeat':
+            return SFeat(gtdb, db_id)
+        elif unit == 'fsgene':
+            return FSGene(gtdb, db_id)
+        else:
+            raise Exception('Unknown unit: %s'  % unit)
 
 class Org(TableObject):
     def __init__(self, gtdb, db_id):
-        self._unit = 'org'
-        main_sql = """
-            SELECT id, c_date, name, genus, phylum, kingdom, dir_path
-            FROM orgs WHERE id=%s"""
         TableObject.__init__(
-            self, gtdb, db_id, main_sql,
+            self, gtdb, db_id,
+            main_sql = '''SELECT id, c_date, name, genus, phylum, kingdom, dir_path
+                FROM orgs WHERE id=%s''',
+            unit = 'org',
             add_prm = True,
             prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn'],
             prm_list = ['taxonomy'])
@@ -110,7 +138,11 @@ class Org(TableObject):
         if 'taxonomy' in self.prm:
             self.prm['taxonomy'] = [d['value'] for d in sorted(
                 self.prm['taxonomy'], key=lambda d: d['num'])]
-
+    
+    def get_all_seq_ids(self):
+        return [d['id'] for d in self.gtdb.exec_sql_ar(
+            'select id from seqs where org_id=%s', self.id)]
+    
     def get_short_name(self):
         '''e.g. 'Mycobacterium tuberculosis H37Rv'  => 'M.tuberculosis'
         '''
@@ -179,26 +211,29 @@ class Org(TableObject):
 class Seq(TableObject, Bio.Seq.Seq):
     def __init__(self, gtdb, db_id, read_seq=False, use_seq=None):
         """Create Seq corresponding to the SEQ GeneTack DB table
-
+        
+        !!! BUG: if the object is created without seq, I want it to inherit
+        !!!      from Bio.Seq.UnknownSeq. Now it crashes when I do print({'key': seq})
+        !!!      because inside print() it tries to access seq.__repr__ that tries to
+        !!!      access seq._data that is not defined in this case
+        
         Arguments:
          - gtdb - [reqiured] GeneTackDB object
          - db_id - [required] valid ID from the SEQ table
          - read_seq - [optional] read the sequence from a DB file
          - use_seq - [optional] take sequence from this Bio.Seq.Seq object
         """
-        self._unit = 'seq'
-        self._has_seq = False
-        main_sql = """
-            SELECT id, user_id, c_date, org_id, name, descr, type, ext_id, len
-            FROM seqs WHERE id=%s
-        """
         TableObject.__init__(
-            self, gtdb, db_id, main_sql,
+            self, gtdb, db_id,
+            main_sql = '''SELECT id, user_id, c_date, org_id, name, descr, type, ext_id, len
+                FROM seqs WHERE id=%s''',
+            unit = 'seq',
             add_prm = True,
             prm_str = ['fna_path', 'gbk_path'],
             prm_int = ['num_n', 'transl_table'],
             prm_float = ['gc'],
         )
+        self._has_seq = False
         
         # Initialize the Bio.Seq if requested
         if use_seq is not None:
@@ -309,10 +344,15 @@ class Seq(TableObject, Bio.Seq.Seq):
 
 class SFeat(TableObject):
     def __init__(self, gtdb, db_id):
-        super().__init__(gtdb, db_id, """
-            SELECT id, seq_id, type, start, end, strand, name, descr, ext_id
-            FROM sfeats WHERE id=%s
-        """)
+        super().__init__(
+            gtdb, db_id,
+            main_sql = '''SELECT id, seq_id, type, start, end, strand, name, descr, ext_id
+                FROM sfeats WHERE id=%s''',
+            unit = 'sfeat',
+            add_prm = True,
+            prm_str = ['protein_id', 'ribosomal_slippage', 'pseudo', 'experiment',
+                       'translation', 'nt_seq'],
+            prm_list = ['EC_number'])
     
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE sfeat_id=%s', self.id)
@@ -345,10 +385,14 @@ class SFeat(TableObject):
                             (f.location, res_l[0]['id']))
             return SFeat(gtdb, res_l[0]['id'])
         
-        sfeat = SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
+        return SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
                                        name = f.qualifiers.get('gene', [None])[0],
                                        descr = f.qualifiers.get('product', [None])[0],
                                        ext_id = f.qualifiers.get('locus_tag', [None])[0])
+    
+    @staticmethod
+    def create_new_in_db_from_CDS_SeqFeature(gtdb, user_id, seq_id, f):
+        sfeat = SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f)
         db_id = sfeat.id
         
         # SFEAT_PARAMS
@@ -402,27 +446,23 @@ class SFeat(TableObject):
         
         all_sfeats = []
         for f in overlapping_feats:
-            all_sfeats.append(SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f))
+            all_sfeats.append(SFeat.create_new_in_db_from_CDS_SeqFeature(gtdb, user_id, seq_id, f))
         
         return all_sfeats
 
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
-        self._unit = 'fsgene'
-        main_sql = """
-            SELECT id, user_id, c_date, seq_id, cof_id, name, descr,
-                   fs_coord, fs_type, start, end, strand, source
-            FROM fsgenes WHERE id=%s
-        """
         self._prm_seq_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
                                'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
-        TableObject.__init__(
-            self, gtdb, db_id, main_sql,
+        super().__init__(gtdb, db_id,
+            main_sql = '''SELECT id, user_id, c_date, seq_id, cof_id, name, descr,
+                fs_coord, fs_type, start, end, strand, source
+                FROM fsgenes WHERE id=%s''',
+            unit = 'fsgene',
             add_prm = True,
             prm_str = self._prm_seq_names,
             prm_int = [],
-            prm_float = [],
-        )
+            prm_float = [])
 
     def delete_from_db(self):
         self.gtdb.exec_sql_nr('DELETE FROM fsgene_sfeats WHERE fsgene_id=%s', self.id)

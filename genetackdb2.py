@@ -208,14 +208,9 @@ class Org(TableObject):
         return os.path.relpath(full_path, gtdb.gtdb_dir)
 
 
-class Seq(TableObject, Bio.Seq.Seq):
+class Seq(TableObject):
     def __init__(self, gtdb, db_id, read_seq=False, use_seq=None):
         """Create Seq corresponding to the SEQ GeneTack DB table
-        
-        !!! BUG: if the object is created without seq, I want it to inherit
-        !!!      from Bio.Seq.UnknownSeq. Now it crashes when I do print({'key': seq})
-        !!!      because inside print() it tries to access seq.__repr__ that tries to
-        !!!      access seq._data that is not defined in this case
         
         Arguments:
          - gtdb - [reqiured] GeneTackDB object
@@ -233,28 +228,35 @@ class Seq(TableObject, Bio.Seq.Seq):
             prm_int = ['num_n', 'transl_table'],
             prm_float = ['gc'],
         )
-        self._has_seq = False
         
         # Initialize the Bio.Seq if requested
-        if use_seq is not None:
-            Bio.Seq.Seq.__init__(self, str(use_seq), use_seq.alphabet)
-        elif read_seq:
-            fasta_fn = os.path.join(gtdb.gtdb_dir, self.prm['fna_path'])
-            record = SeqIO.read(fasta_fn, "fasta")
-            alphabet = Bio.Alphabet.SingleLetterAlphabet
-            if self.type == 'DNA' and self.prm['num_n'] == 0:
-                alphabet = Bio.Alphabet.IUPAC.unambiguous_dna
-            elif self.type == 'DNA' and self.prm['num_n'] > 0:
-                alphabet = Bio.Alphabet.IUPAC.ambiguous_dna
-            Bio.Seq.Seq.__init__(self, str(record.seq), alphabet)
+        if read_seq:
+            use_seq = self._read_seq_from_file()
         
-        # self._data is created by the Bio.Seq.Seq constructor
-        if hasattr(self, '_data'):
+        if use_seq is None:
+            # Inherit and initialize Bio.Seq.UnknownSeq
+            # https://stackoverflow.com/a/8545134/310453
+            self.__class__ = type('Seq', (TableObject, Bio.Seq.UnknownSeq), {})
+            Bio.Seq.UnknownSeq.__init__(self, self.len)
+            self._has_seq = False
+        else:
             # make sure that len in DB and the actual sequence length match
-            if self.len != len(self):
-                raise Exception("Sequence length ('%d') != value in DB ('%d')", (self.len, len(self)))
-            else:
-                self._has_seq = True
+            if self.len != len(use_seq):
+                raise Exception("Sequence length ('%d') != value in DB ('%d')",
+                                (self.len, len(use_seq)))
+            self.__class__ = type('Seq', (TableObject, Bio.Seq.Seq), {})
+            Bio.Seq.Seq.__init__(self, str(use_seq), use_seq.alphabet)
+            self._has_seq = True
+    
+    def _read_seq_from_file(self):
+        fasta_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['fna_path'])
+        record = SeqIO.read(fasta_fn, "fasta")
+        alphabet = Bio.Alphabet.SingleLetterAlphabet
+        if self.type == 'DNA' and self.prm['num_n'] == 0:
+            record.seq.alphabet = Bio.Alphabet.IUPAC.unambiguous_dna
+        elif self.type == 'DNA' and self.prm['num_n'] > 0:
+            record.seq.alphabet = Bio.Alphabet.IUPAC.ambiguous_dna
+        return record.seq
     
     def read_genbank_file(self):
         gb_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['gbk_path'])

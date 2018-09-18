@@ -688,7 +688,13 @@ def _get_genus_phylum_kingdom(seq_record):
     elif taxa_l[-2] in species:
         genus = taxa_l[-2]
     else:
-        logging.warning("Can't determine genus for species name '{}' and taxonomy {}".format(species, taxa_l))
+        logging.warning("Can't determine genus for species name '%s' and taxonomy %s" %
+                        (species, taxa_l))
+        genus = None
+    
+    if genus is not None and ' ' in genus:
+        # Genus must be a single word!
+        logging.warning("Wrong genus '%s' for species name '%s'" % (genus, species))
         genus = None
     
     phylum = taxa_l[1]

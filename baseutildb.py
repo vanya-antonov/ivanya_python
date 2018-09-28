@@ -28,7 +28,7 @@ class BaseUtilDB:
     def exec_sql_ar(self, sql, *params):
         logging.debug("[exec_sql_ar] use values {} to execute SQL:\n{}".format(params, sql))
         self.cur.execute(sql, params)
-        return self.cur.fetchall()
+        return list(self.cur.fetchall())
     
     #---
     def exec_sql_nr(self, sql, *params):

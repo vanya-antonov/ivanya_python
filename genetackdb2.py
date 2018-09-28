@@ -131,7 +131,7 @@ class Org(TableObject):
                 FROM orgs WHERE id=%s''',
             unit = 'org',
             add_prm = True,
-            prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn'],
+            prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn', 'short_name'],
             prm_list = ['taxonomy'])
         
         # Modify prm['taxonomy']: list of dicts  =>  list of strings
@@ -139,14 +139,24 @@ class Org(TableObject):
             self.prm['taxonomy'] = [d['value'] for d in sorted(
                 self.prm['taxonomy'], key=lambda d: d['num'])]
     
-    def get_all_seq_ids(self):
-        return [d['id'] for d in self.gtdb.exec_sql_ar(
-            'select id from seqs where org_id=%s', self.id)]
+    def make_all_params(self):
+        short_name = self.get_short_name()
+        if short_name is None:
+            logging.warning("Can't generate short name from '%s'" % self.name)
+        else:
+            self.set_param('short_name', value = short_name)
     
     def get_short_name(self):
         '''e.g. 'Mycobacterium tuberculosis H37Rv'  => 'M.tuberculosis'
         '''
-        return re.compile(r'^(\w)\w*\s+(\w+).*$').sub(r'\1.\2', self.name)
+        if re.compile(r'^(\w)\w*\s+(\w+).*$').match(self.name):
+            return re.compile(r'^(\w)\w*\s+(\w+).*$').sub(r'\1.\2', self.name)
+        else:
+            return None
+    
+    def get_all_seq_ids(self):
+        return [d['id'] for d in self.gtdb.exec_sql_ar(
+            'select id from seqs where org_id=%s', self.id)]
     
     def delete_from_db(self):
         for seq in self.gtdb.exec_sql_ar('select id from seqs where org_id=%s', self.id):

@@ -218,15 +218,13 @@ class Org(TableObject):
         return os.path.relpath(full_path, gtdb.gtdb_dir)
 
 
-class Seq(TableObject):
-    def __init__(self, gtdb, db_id, read_seq=False, use_seq=None):
-        """Create Seq corresponding to the SEQ GeneTack DB table
+class BaseSeq(TableObject):
+    def __init__(self, gtdb, db_id):
+        """Basic Seq corresponding to the SEQ GeneTack DB table
         
         Arguments:
          - gtdb - [reqiured] GeneTackDB object
          - db_id - [required] valid ID from the SEQ table
-         - read_seq - [optional] read the sequence from a DB file
-         - use_seq - [optional] take sequence from this Bio.Seq.Seq object
         """
         TableObject.__init__(
             self, gtdb, db_id,
@@ -238,35 +236,6 @@ class Seq(TableObject):
             prm_int = ['num_n', 'transl_table'],
             prm_float = ['gc'],
         )
-        
-        # Initialize the Bio.Seq if requested
-        if read_seq:
-            use_seq = self._read_seq_from_file()
-        
-        if use_seq is None:
-            # Inherit and initialize Bio.Seq.UnknownSeq
-            # https://stackoverflow.com/a/8545134/310453
-            self.__class__ = type('Seq', (TableObject, Bio.Seq.UnknownSeq), {})
-            Bio.Seq.UnknownSeq.__init__(self, self.len)
-            self._has_seq = False
-        else:
-            # make sure that len in DB and the actual sequence length match
-            if self.len != len(use_seq):
-                raise Exception("Sequence length ('%d') != value in DB ('%d')",
-                                (self.len, len(use_seq)))
-            self.__class__ = type('Seq', (TableObject, Bio.Seq.Seq), {})
-            Bio.Seq.Seq.__init__(self, str(use_seq), use_seq.alphabet)
-            self._has_seq = True
-    
-    def _read_seq_from_file(self):
-        fasta_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['fna_path'])
-        record = SeqIO.read(fasta_fn, "fasta")
-        alphabet = Bio.Alphabet.SingleLetterAlphabet
-        if self.type == 'DNA' and self.prm['num_n'] == 0:
-            record.seq.alphabet = Bio.Alphabet.IUPAC.unambiguous_dna
-        elif self.type == 'DNA' and self.prm['num_n'] > 0:
-            record.seq.alphabet = Bio.Alphabet.IUPAC.ambiguous_dna
-        return record.seq
     
     def read_genbank_file(self):
         gb_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['gbk_path'])
@@ -352,6 +321,44 @@ class Seq(TableObject):
         tmp = SeqRecord(record.seq, id=str(seq_id), name='', description='')
         SeqIO.write(tmp, full_path, "fasta")
         return os.path.relpath(full_path, gtdb.gtdb_dir)
+
+
+class Seq(BaseSeq, Bio.Seq.UnknownSeq):
+    def __init__(self, gtdb, db_id):
+        BaseSeq.__init__(self, gtdb, db_id)
+        Bio.Seq.UnknownSeq.__init__(self, self.len)
+        self._has_seq = False
+
+
+class SeqWithSeq(BaseSeq, Bio.Seq.Seq):
+    def __init__(self, gtdb, db_id, use_seq=None):
+        """Create BaseSeq object and read the actual sequence from file
+        
+        Arguments:
+         - use_seq - [optional] take sequence from this Bio.Seq.Seq object
+        """
+        BaseSeq.__init__(self, gtdb, db_id)
+        
+        if use_seq is None:
+            use_seq = self._read_seq_from_file()
+        
+        # make sure that len in DB and the actual sequence length match
+        if self.len != len(use_seq):
+            raise Exception("Sequence length ('%d') != value in DB ('%d')",
+                            (self.len, len(use_seq)))
+        
+        Bio.Seq.Seq.__init__(self, str(use_seq), use_seq.alphabet)
+        self._has_seq = True
+    
+    def _read_seq_from_file(self):
+        fasta_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['fna_path'])
+        record = SeqIO.read(fasta_fn, "fasta")
+        alphabet = Bio.Alphabet.SingleLetterAlphabet
+        if self.type == 'DNA' and self.prm['num_n'] == 0:
+            record.seq.alphabet = Bio.Alphabet.IUPAC.unambiguous_dna
+        elif self.type == 'DNA' and self.prm['num_n'] > 0:
+            record.seq.alphabet = Bio.Alphabet.IUPAC.ambiguous_dna
+        return record.seq
 
 
 class SFeat(TableObject):
@@ -506,7 +513,7 @@ class FSGene(TableObject):
     
     def make_all_params(self, seq=None):
         if seq is None:
-            seq = Seq(self.gtdb, self.seq_id, read_seq=True)
+            seq = SeqWithSeq(self.gtdb, self.seq_id)
         
         # make NAME like: 'NC_010002.1:1922457:-1'
         if self.fs_type == 0:

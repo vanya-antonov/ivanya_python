@@ -237,6 +237,10 @@ class BaseSeq(TableObject):
             prm_float = ['gc'],
         )
     
+    def get_all_fsgene_ids(self):
+        return [d['id'] for d in self.gtdb.exec_sql_ar(
+            'select id from fsgenes where seq_id=%s', self.id)]
+    
     def read_genbank_file(self):
         gb_fn = os.path.join(self.gtdb.gtdb_dir, self.prm['gbk_path'])
         return SeqIO.read(gb_fn, "genbank")

@@ -17,7 +17,7 @@ from Bio.SeqFeature import FeatureLocation, CompoundLocation
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import GC
 
-from mylib.baseutilbio import get_FeatureLocation_overlap_len
+from mylib.baseutilbio import get_overlapping_feats_from_record
 from mylib.baseutildb import BaseUtilDB
 from mylib.local import PATH2
 
@@ -26,18 +26,6 @@ class GeneTackDB(BaseUtilDB):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.gtdb_dir = PATH2['gtdb2']
-    
-    def set_param_to(self, unit, db_id, name, **kwargs):
-        self.delete_param(unit, db_id, name)
-        self.add_param_to(unit, db_id, name, **kwargs)
-    
-    def add_param_to(self, unit, db_id, name, value=None, num=None):
-        sql = 'INSERT INTO {0}_params ({0}_id, name, value, num)'.format(unit)
-        self.exec_sql_in(sql, db_id, name, value, num)
-    
-    def delete_param(self, unit, db_id, name):
-        sql = 'delete from {0}_params where {0}_id=%s and name=%s'.format(unit)
-        self.exec_sql_nr(sql, db_id, name)
     
     # Argument is the path RELATIVE to the GTDB dir
     def delete_file(self, fn):
@@ -91,9 +79,20 @@ class TableObject:
             elif d['name'] in prm_float:
                 self.prm[d['name']] = float(d['num'])
     
-    def set_param(self, name, **kwargs):
-        self.gtdb.delete_param(self._unit, self.id, name)
-        self.gtdb.add_param_to(self._unit, self.id, name, **kwargs)
+    def set_param(self, name, value=None, num=None):
+        self.delete_param(name)
+        self.add_param(name, value, num)
+    
+    def add_param(self, name, value=None, num=None):
+        sql = 'INSERT INTO {0}_params ({0}_id, name, value, num)'.format(self._unit)
+        self.gtdb.exec_sql_in(sql, self.id, name, value, num)
+    
+    def delete_param(self, name):
+        sql = 'delete from {0}_params where {0}_id=%s and name=%s'.format(self._unit)
+        self.gtdb.exec_sql_nr(sql, self.id, name)
+    
+    def get_param_with_full_path(self, name):
+        return os.path.join(self.gtdb.gtdb_dir, self.prm[name])
     
     def get_myself_and_all_parents(self):
         '''Returns a dictionary with objects
@@ -131,7 +130,8 @@ class Org(TableObject):
                 FROM orgs WHERE id=%s''',
             unit = 'org',
             add_prm = True,
-            prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn', 'short_name'],
+            prm_str = ['BioSample', 'BioProject', 'Assembly', 'source_fn', 'short_name',
+                      'blastdb_genome'],
             prm_list = ['taxonomy'])
         
         # Modify prm['taxonomy']: list of dicts  =>  list of strings
@@ -190,20 +190,21 @@ class Org(TableObject):
         dir_path = Org._create_org_dir(gtdb, name)
         
         db_id = gtdb.get_random_db_id('orgs', 'id')
-        gtdb.exec_sql_in("""INSERT INTO orgs (
-                id, user_id, name, genus, phylum, kingdom, dir_path)
-        """, db_id, user_id, name, genus, phylum, kingdom, dir_path
-        )
+        gtdb.exec_sql_in(
+            "INSERT INTO orgs (id, user_id, name, genus, phylum, kingdom, dir_path)",
+            db_id, user_id, name, genus, phylum, kingdom, dir_path)
+        org = Org(gtdb, db_id)
         
         # ORG_PARAMS
         dbx_dict = db_xref_list_to_dict(record.dbxrefs)
         for (name,value) in dbx_dict.items():
-            gtdb.add_param_to('org', db_id, name, value)
+            org.add_param(name, value)
         
         num = 0
         for value in record.annotations.get('taxonomy',[]):
-            gtdb.add_param_to('org', db_id, 'taxonomy', value, num)
+            org.add_param('taxonomy', value, num)
             num += 1
+        
         return db_id
     
     #---
@@ -279,31 +280,30 @@ class BaseSeq(TableObject):
         length = len(record.seq)
         
         db_id = gtdb.get_random_db_id('seqs', 'id')
-        
-        gtdb.exec_sql_in("""INSERT INTO seqs (
-               id, user_id, org_id, name, descr,   type, ext_id, len)
-        """,db_id, user_id, org.id, name, descr, m_type, ext_id, length
-        )
+        gtdb.exec_sql_in(
+            "INSERT INTO seqs (id, user_id, org_id, name, descr, type, ext_id, len)",
+            db_id, user_id, org.id, name, descr, m_type, ext_id, length)
+        seq = BaseSeq(gtdb, db_id)
         
         # SEQ_PARAMS
         fna_path = Seq._save_fasta(gtdb, record, org, db_id)
-        gtdb.add_param_to('seq', db_id, 'fna_path', value=fna_path)
+        seq.add_param('fna_path', value=fna_path)
         
         gbk_path = Seq._save_gbk(gtdb, record, org)
-        gtdb.add_param_to('seq', db_id, 'gbk_path', value=gbk_path)
+        seq.add_param('gbk_path', value=gbk_path)
         
         # Get translation table
         transl_table = _get_genetic_code_from_SeqRecord(record)
         if transl_table is not None:
-            gtdb.add_param_to('seq', db_id, 'transl_table', num=transl_table)
+            seq.add_param('transl_table', num=transl_table)
         
         num_n = len(re.compile('[^ACGTacgt]').findall(str(record.seq)))
-        gtdb.add_param_to('seq', db_id, 'num_n', num=num_n)
+        seq.add_param('num_n', num=num_n)
         
         # GC content without ambiguous letters
         gc = GC(re.compile('[^ACGTacgt]').sub('', str(record.seq)))
         gc_str = '%.1f%%' % gc   # 72.1186611098208   => ' 72.1%'
-        gtdb.add_param_to('seq', db_id, 'gc', value=gc_str, num=gc)
+        seq.add_param('gc', value=gc_str, num=gc)
         
         return db_id
     
@@ -395,28 +395,51 @@ class SFeat(TableObject):
         return SFeat(gtdb, db_id)
     
     @staticmethod
-    def create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f):
-        start   = int(f.location.start)
-        end     = int(f.location.end)
-        strand  = f.location.strand
-        
-        # Check if this feature already exists!
-        res_l = gtdb.exec_sql_ar('''SELECT id FROM sfeats WHERE start=%s and end=%s and strand=%s''',
-                                 start, end, strand)
+    def get_db_id_by_SeqFeature(gtdb, f):
+        """Checks if this feature has already been loaded to GTDB.
+        """
+        start = int(f.location.start)
+        end = int(f.location.end)
+        strand = f.location.strand
+        res_l = gtdb.exec_sql_ar(
+            'SELECT id FROM sfeats WHERE start=%s and end=%s and strand=%s',
+            start, end, strand)
         if len(res_l) > 0:
-            logging.warning('SeqFeature %s already present in DB (%s)' %
-                            (f.location, res_l[0]['id']))
-            return SFeat(gtdb, res_l[0]['id'])
+            return res_l[0]['id']
         
-        return SFeat.create_new_in_db(gtdb, user_id, seq_id, start, end, strand, f.type,
-                                       name = f.qualifiers.get('gene', [None])[0],
-                                       descr = f.qualifiers.get('product', [None])[0],
-                                       ext_id = f.qualifiers.get('locus_tag', [None])[0])
+        if 'locus_tag' in f.qualifiers:
+            res_l = gtdb.exec_sql_ar('SELECT id FROM sfeats WHERE ext_id=%s',
+                                     f.qualifiers['locus_tag'])
+            if len(res_l) > 0:
+                return res_l[0]['id']
+        return None
+    
+    @staticmethod
+    def create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f):
+        sfeat_id = SFeat.get_db_id_by_SeqFeature(gtdb, f)
+        if sfeat_id is not None:
+            logging.info('SeqFeature %s already present in DB (%d)' %
+                         (f.location, sfeat_id))
+            return SFeat(gtdb, sfeat_id)
+        
+        start = int(f.location.start)
+        end = int(f.location.end)
+        strand = f.location.strand
+        return SFeat.create_new_in_db(
+            gtdb, user_id, seq_id, start, end, strand, f.type,
+            name = f.qualifiers.get('gene', [None])[0],
+            descr = f.qualifiers.get('product', [None])[0],
+            ext_id = f.qualifiers.get('locus_tag', [None])[0])
     
     @staticmethod
     def create_new_in_db_from_CDS_SeqFeature(gtdb, user_id, seq_id, f):
+        sfeat_id = SFeat.get_db_id_by_SeqFeature(gtdb, f)
+        if sfeat_id is not None:
+            logging.info('SeqFeature %s already present in DB (%d)' %
+                         (f.location, sfeat_id))
+            return SFeat(gtdb, sfeat_id)
+        
         sfeat = SFeat.create_new_in_db_from_SeqFeature(gtdb, user_id, seq_id, f)
-        db_id = sfeat.id
         
         # SFEAT_PARAMS
         prm_keys = [
@@ -425,15 +448,14 @@ class SFeat(TableObject):
         for k, vals in f.qualifiers.items():
             if k in prm_keys:
                 for v in vals:
-                    gtdb.add_param_to('sfeat', db_id, k, v)
+                    sfeat.add_param(k, v)
         
         for prot_seq in f.qualifiers.get('translation', []):
-            gtdb.add_param_to('sfeat', db_id, 'translation',
-                             value=prot_seq, num=len(prot_seq))
+            sfeat.add_param('translation', value=prot_seq, num=len(prot_seq))
         
         dbx_dict = db_xref_list_to_dict(f.qualifiers.get('db_xref', []))
-        for (name,value) in dbx_dict.items():
-            gtdb.add_param_to('sfeat', db_id, name, value)
+        for (name, value) in dbx_dict.items():
+            sfeat.add_param(name, value)
         
         return sfeat
     
@@ -448,28 +470,14 @@ class SFeat(TableObject):
         if record is None:
             record = Seq(gtdb, seq_id).read_genbank_file()
         
-        target_loc = FeatureLocation(start, end, strand)
-        overlapping_feats = []
-        for f in record.features:
-            if f.type != 'CDS':
-                continue
-            f._overlap_len = get_FeatureLocation_overlap_len(f.location, target_loc)
-            if f._overlap_len >= min_overlap:
-                overlapping_feats.append(f)
-        
-        if len(overlapping_feats) == 0:
-            return []
-        
-        if max_sfeats > 0 and len(overlapping_feats) > max_sfeats:
-            # Sort by overlap_len: https://docs.python.org/3.6/howto/sorting.html
-            overlapping_feats = sorted(overlapping_feats, reverse=True,
-                                       key=lambda f: f._overlap_len)
-            # Take the longest feats only
-            overlapping_feats = overlapping_feats[0:max_sfeats]
+        overlapping_feats = get_overlapping_feats_from_record(
+            record, start, end, strand, all_types=['CDS'],
+            min_overlap=min_overlap, max_feats=max_sfeats)
         
         all_sfeats = []
         for f in overlapping_feats:
-            all_sfeats.append(SFeat.create_new_in_db_from_CDS_SeqFeature(gtdb, user_id, seq_id, f))
+            all_sfeats.append(
+                SFeat.create_new_in_db_from_CDS_SeqFeature(gtdb, user_id, seq_id, f))
         
         return all_sfeats
 
@@ -535,11 +543,8 @@ class FSGene(TableObject):
     def make_prm_seqs(self, seq):
         seq_dict = FSGene._get_prot_seq_parts(self.start, self.end, self.strand,
                                               self.fs_coord, self.fs_type, seq)
-        
         for name in self._prm_seq_names:
-            self.gtdb.delete_param(self._unit, self.id, name)
-            self.gtdb.add_param_to(self._unit, self.id, name, value=seq_dict[name],
-                                   num=len(seq_dict[name]))
+            self.set_param(name, value=seq_dict[name], num=len(seq_dict[name]))
     
     def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
         up_len_nt = fs_coord - start
@@ -644,6 +649,18 @@ class FSGene(TableObject):
         if f.location.strand is None:
             return "The parts of CompoundLocation have different strands = '{}'".format(f.location)
         return None
+    
+    @staticmethod
+    def get_db_id_by_sfeat_id(gtdb, sfeat_id):
+        res_l = gtdb.exec_sql_ar(
+            'SELECT fsgene_id FROM fsgene_sfeats WHERE sfeat_id=%s', sfeat_id)
+        
+        if len(res_l) == 0:
+            return None
+        elif len(res_l) > 1:
+            raise Exception("SFEAT_ID '%d' matches several FSGenes!" % sfeat_id)
+        else:
+            return res_l[0]['fsgene_id']
     
     @staticmethod
     def get_ids_for_seq_coords(gtdb, seq_id, left, right):

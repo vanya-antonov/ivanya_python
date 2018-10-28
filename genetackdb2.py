@@ -605,6 +605,7 @@ class FSGene(TableObject):
             """, db_id, c_date, user_id, seq_id, fs_coord, fs_type,
             start, end, strand, source, cof_id)
         
+        logging.info("New FSGENE has beed created with id '%d'" % db_id)
         return FSGene(gtdb, db_id)
     
     @staticmethod
@@ -665,17 +666,11 @@ class FSGene(TableObject):
     @staticmethod
     def get_ids_for_seq_coords(gtdb, seq_id, left, right):
         return [d['id'] for d in gtdb.exec_sql_ar(
-            """
-            select distinct id from fsgenes
-            where seq_id={S}
-            and (
-            ({L} <= start AND end <= {R}) OR
-            ({L} <= start AND {R} <= end) OR
-            (start <= {L} AND end <= {R}) OR
-            (start <= {L} AND {R} <= end)
-            )
-            """.format(S=seq_id, L=left, R=right)
-        )]
+            """select distinct id from fsgenes
+            where seq_id={S} and (
+                ({L} <= start AND start <= {R}) OR
+                ({L} <= end AND end <= {R})
+            )""".format(S=seq_id, L=left, R=right))]
 
 def make_new_fullpath_for_basename(subdir, basename):
     """Returns a full path to create a new file or folder"""

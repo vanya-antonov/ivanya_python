@@ -484,7 +484,7 @@ class SFeat(TableObject):
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
         self._prm_seq_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
-                               'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
+                               'nt_seq', 'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
         super().__init__(gtdb, db_id,
             main_sql = '''SELECT id, user_id, c_date, seq_id, cof_id, name, descr,
                 fs_coord, fs_type, start, end, strand, source
@@ -576,8 +576,9 @@ class FSGene(TableObject):
             raise Exception("FS-prot seq contains in-frame stop codon:\n%s\n\n%s" % (prot_seq_n, prot_seq_c))
         
         return {
-            'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
+            'nt_seq': chunk_nt[:up_len_nt].lower() + chunk_nt[up_len_nt:].upper(),
             'nt_seq_corr': up_chunk_nt.lower() + down_chunk_nt.upper(),
+            'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
             'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
             'prot_seq': prot_seq_n.lower() + prot_seq_c.upper(),
         }

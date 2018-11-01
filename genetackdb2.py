@@ -17,7 +17,8 @@ from Bio.SeqFeature import FeatureLocation, CompoundLocation
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import GC
 
-from mylib.baseutilbio import get_overlapping_feats_from_record
+from mylib.baseutilbio import (get_overlapping_feats_from_record,
+                               get_dual_coding_stop_stop_location)
 from mylib.baseutildb import BaseUtilDB
 from mylib.local import PATH2
 
@@ -483,7 +484,7 @@ class SFeat(TableObject):
 
 class FSGene(TableObject):
     def __init__(self, gtdb, db_id):
-        self._prm_seq_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c',
+        self._prm_seq_names = ['prot_seq', 'prot_seq_n', 'prot_seq_c', 'ss_seq',
                                'nt_seq', 'nt_seq_corr', 'nt_seq_n', 'nt_seq_c']
         super().__init__(gtdb, db_id,
             main_sql = '''SELECT id, user_id, c_date, seq_id, cof_id, name, descr,
@@ -535,16 +536,24 @@ class FSGene(TableObject):
             name = '%s:%d:%+d' % (seq.ext_id, self.fs_coord, self.fs_type)
         self.gtdb.exec_sql_nr('update fsgenes set name=%s where id=%s', name, self.id)
         
-        try:
-            self.make_prm_seqs(seq)
-        except Exception as e:
-            logging.error("Couldn't generate prm_seqs for fsgene '%d':\n%s" % (self.id, e))
+        self.make_prm_seqs(seq)
         
     def make_prm_seqs(self, seq):
-        seq_dict = FSGene._get_prot_seq_parts(self.start, self.end, self.strand,
-                                              self.fs_coord, self.fs_type, seq)
         for name in self._prm_seq_names:
-            self.set_param(name, value=seq_dict[name], num=len(seq_dict[name]))
+            self.delete_param(name)
+        
+        seq_dict = FSGene._get_prot_seq_parts(
+            self.start, self.end, self.strand, self.fs_coord, self.fs_type, seq)
+        for name in seq_dict:
+            if name in self._prm_seq_names:
+                self.set_param(name, value=seq_dict[name], num=len(seq_dict[name]))
+        
+        if self.fs_type != 0:
+            ss_loc = get_dual_coding_stop_stop_location(
+                self.fs_coord, self.fs_type, self.strand, seq, seq.prm['transl_table'])
+            if ss_loc is not None:
+                ss_seq = ss_loc.extract(seq)
+                self.set_param('ss_seq', ss_seq, num = len(ss_seq))
     
     def _get_prot_seq_parts(start, end, strand, fs_coord, fs_type, seq):
         up_len_nt = fs_coord - start
@@ -552,15 +561,16 @@ class FSGene(TableObject):
         if strand == -1:
             up_len_nt, down_len_nt = down_len_nt, up_len_nt
         
-        # Backward frameshiting increases the length of the C-terminal part of the fs-protein
+        # Backward frameshiting increases the C-terminal length of fs-protein
         down_len_nt -= fs_type
         
         if up_len_nt % 3 != 0 or down_len_nt % 3 != 0:
-            fmt = """
-            The length of the upstream or downstream fsgene part (%d / %d) is not divisible by 3:
-            start=%d, end=%d, fs_coord=%d, fs_type=%+d, strand=%d
-            """
-            raise Exception(fmt % (up_len_nt, down_len_nt, start, end, fs_coord, fs_type, strand))
+            logging.error(
+                "The length of the upstream / downstream fsgene part "
+                "(%d / %d) is not divisible by 3: start=%d, end=%d, "
+                "fs_coord=%d, fs_type=%+d, strand=%d" %
+                (up_len_nt, down_len_nt, start, end, fs_coord, fs_type, strand))
+            return {}
         
         chunk_nt = seq[start:end]
         if strand == -1:
@@ -572,16 +582,17 @@ class FSGene(TableObject):
         prot_seq_c = down_chunk_nt.translate(table = seq.prm['transl_table'])
         prot_seq_c = prot_seq_c.rstrip('*')  # remove possible stop codon at the end
         
-        if '*' in prot_seq_n or '*' in prot_seq_c:
-            raise Exception("FS-prot seq contains in-frame stop codon:\n%s\n\n%s" % (prot_seq_n, prot_seq_c))
+        if '*' in prot_seq_n + prot_seq_c:
+            logging.error("FS-prot seq contains in-frame stop codon:\n%s\n\n%s" %
+                          (prot_seq_n, prot_seq_c))
+            return {}
         
         return {
             'nt_seq': chunk_nt[:up_len_nt].lower() + chunk_nt[up_len_nt:].upper(),
             'nt_seq_corr': up_chunk_nt.lower() + down_chunk_nt.upper(),
             'nt_seq_n': up_chunk_nt.upper(), 'nt_seq_c': down_chunk_nt.upper(),
             'prot_seq_n': prot_seq_n.upper(), 'prot_seq_c': prot_seq_c.upper(),
-            'prot_seq': prot_seq_n.lower() + prot_seq_c.upper(),
-        }
+            'prot_seq': prot_seq_n.lower() + prot_seq_c.upper()}
     
     @staticmethod
     def create_new_in_db(gtdb, seq_id, user_id, start, end, strand, fs_coord, fs_type,
@@ -668,10 +679,8 @@ class FSGene(TableObject):
     def get_ids_for_seq_coords(gtdb, seq_id, left, right):
         return [d['id'] for d in gtdb.exec_sql_ar(
             """select distinct id from fsgenes
-            where seq_id={S} and (
-                ({L} <= start AND start <= {R}) OR
-                ({L} <= end AND end <= {R})
-            )""".format(S=seq_id, L=left, R=right))]
+            where seq_id={S} and {L} < fs_coord AND fs_coord < {R}
+            """.format(S=seq_id, L=left, R=right))]
 
 def make_new_fullpath_for_basename(subdir, basename):
     """Returns a full path to create a new file or folder"""

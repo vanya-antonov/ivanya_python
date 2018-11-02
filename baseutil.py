@@ -1,13 +1,33 @@
 
 # $Id$
 
+import re
+import fileinput
 
-def get_overlap_len(s1,e1,s2,e2):
-    start, end = get_overlap_region(s1,e1,s2,e2)
-    if start is None or end is None:
-        return 0
-    else:
-        return end-start
+
+def get_all_ids(fn):
+    """Returns a list  of integers from 'fn'.
+    
+    Arguments:
+        - fn - a string representing a input file name. If None or equal to '-' - read
+          from STDIN; fn is treated as a single ID if it is a digit string.
+    """
+    if fn is None:
+        fn = '-'
+    
+    if fn.isdigit():
+        return [int(fn)]   # just a single ID
+    
+    all_ids = []
+    for line in fileinput.input(files=fn):
+        line = line.rstrip()
+        if line.isspace():
+            continue
+        if not line.isdigit():
+            raise Exception("Wrong ID '%s'!" % line)
+        all_ids.append(int(line))
+    
+    return all_ids
 
 ###
 # 0-based system is used (like in Biopython)
@@ -24,7 +44,8 @@ def get_overlap_len(s1,e1,s2,e2):
 #
 def get_overlap_region(s1,e1,s2,e2):
     if s1 > e1 or s2 > e2:
-        raise Exception("Something is wrong with the intervals (%i,%i) and (%i,%i)" % (s1,e1,s2,e2))
+        raise Exception("Something is wrong with the intervals (%i,%i) and (%i,%i)" %
+                        (s1,e1,s2,e2))
     
     if s1 <= s2 <= e1 and s1 <= e2 <= e1:
         # |----------------|

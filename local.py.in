@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 
 DB_ACCOUNTS = {
-	'gtdb' : {
-		'name' : "genetack",         'host' : "localhost",
-		'user' : "ivan",             'pass' : "123",
-	},
-	'gtdb2' : {
-		'name' : "gtdb2",            'host' : "localhost",
-		'user' : "ivan",             'pass' : "123",
-	},
-	'ivdb' : {
-		'name' : "ivanyaco_toilet",  'host' : "ivanya.com",
-		'user' : "ivanyaco_toilet",  'pass' : "123",
-	},
-	'sadb' : {
-		'name' : "calc_hg19",        'host' : "localhost",
-		'user' : "ivan",             'pass' : "123",
-	},
-	'svdb' : {
-		'name' : "slavanya_deals",   'host' : "slavanya.com",
-		'user' : "slavanya_deals",   'pass' : "123",
-	},
+    'gtdb' : {
+        'name' : "genetack",         'host' : "localhost",
+        'user' : "ivan",             'pass' : "123",
+    },
+    'gtdb2' : {
+        'name' : "gtdb2",            'host' : "localhost",
+        'user' : "ivan",             'pass' : "123",
+    },
+    'ivdb' : {
+        'name' : "ivanyaco_toilet",  'host' : "ivanya.com",
+        'user' : "ivanyaco_toilet",  'pass' : "123",
+    },
+    'sadb' : {
+        'name' : "calc_hg19",        'host' : "localhost",
+        'user' : "ivan",             'pass' : "123",
+    },
+    'svdb' : {
+        'name' : "slavanya_deals",   'host' : "slavanya.com",
+        'user' : "slavanya_deals",   'pass' : "123",
+    },
 };
 DB_ACCOUNTS['default'] = DB_ACCOUNTS['gtdb2']
 

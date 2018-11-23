@@ -1,2 +1,2 @@
-# ivanya_python_lib
+# ivanya_python
 My python library for general tasks

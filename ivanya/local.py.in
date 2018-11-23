@@ -1,8 +1,0 @@
-
-DB_ACCOUNTS = {
-    'gtdb2': {
-        'name': "gtdb2",   'host': "localhost",
-        'user': "",        'pass': "",
-    },
-};
-DB_ACCOUNTS['default'] = DB_ACCOUNTS['gtdb2']

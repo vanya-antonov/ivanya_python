@@ -36,7 +36,7 @@ def make_random_dna_seq(dna_len, dna_gc, max_diff=1):
     while True:
         rand_dna = _make_random_dna(dna_len, dna_gc)
         if abs(GC(rand_dna) - dna_gc) < max_diff:
-		    # The difference between the GC-content of the generated seq and
+            # The difference between the GC-content of the generated seq and
             # the desired value is acceptable
             return Seq(rand_dna, generic_dna)
         elif num_tries > 1000:

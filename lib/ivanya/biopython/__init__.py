@@ -197,6 +197,12 @@ def get_FeatureLocation_overlap_len(f1, f2):
     return len(set(f1).intersection(set(f2)))
 
 def fasta2dict(fn, alphabet=None):
+    """TODO: Use SeqIO instead!!
+    https://biopython.org/wiki/SeqIO
+    from Bio import SeqIO
+    record_dict = SeqIO.to_dict(SeqIO.parse("example.fasta", "fasta"))
+    print(record_dict["gi:12345678"])  # use any record ID.
+    """
     seq_dict = {}
     for seq_record in SeqIO.parse(fn, "fasta", alphabet):
         if seq_record.id in seq_dict:

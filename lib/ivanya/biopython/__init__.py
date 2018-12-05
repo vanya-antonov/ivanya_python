@@ -8,7 +8,6 @@ import sys
 import logging    # https://www.youtube.com/watch?v=-RcDmGNSuvU
 from pprint import pprint
 
-from Bio import SeqIO
 from Bio.Alphabet import generic_protein
 from Bio.Blast import NCBIXML
 from Bio.Data import CodonTable
@@ -195,22 +194,6 @@ def get_FeatureLocation_overlap_len(f1, f2):
         return 0
     
     return len(set(f1).intersection(set(f2)))
-
-def fasta2dict(fn, alphabet=None):
-    """TODO: Use SeqIO instead!!
-    https://biopython.org/wiki/SeqIO
-    from Bio import SeqIO
-    record_dict = SeqIO.to_dict(SeqIO.parse("example.fasta", "fasta"))
-    print(record_dict["gi:12345678"])  # use any record ID.
-    """
-    seq_dict = {}
-    for seq_record in SeqIO.parse(fn, "fasta", alphabet):
-        if seq_record.id in seq_dict:
-            logging.warning("Sequence name '%s' is duplicated in file '%s'" %
-                            (seq_record.id, fn))
-            continue
-        seq_dict[seq_record.id] = seq_record
-    return seq_dict
 
 def read_blast_xml(fn):
     f = open( fn )

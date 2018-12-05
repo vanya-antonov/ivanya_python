@@ -90,7 +90,7 @@ def parse_args():
     parser.add_argument('--max_diff', metavar='GC', type=float, default=5.0,
                         help="the maximum acceptable difference between the "
                        "DNA_GC and the actual GC content of random sequence; "
-                       "default is 5.0%")
+                       "default is 5.0")
     parser.add_argument('--format', metavar='str', default='fasta-2line',
                         help="output format, default is 'fasta-2line'. "
                         "See the list of other formats at "

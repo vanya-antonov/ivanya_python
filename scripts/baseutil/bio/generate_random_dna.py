@@ -29,15 +29,12 @@ def main(args):
 
 def make_random_dna_records(dna_len, dna_gc, num_records, prefix='', max_diff=1):
     """Returs a list of SeqRecord objects containing random DNA sequences."""
-    all_records = []
     for i in range(num_records):
-        record = SeqRecord(
+        yield SeqRecord(
             seq=make_random_dna_seq(dna_len, dna_gc, max_diff),
             id=prefix + str(i+1),
             name="",
             description="")
-        all_records.append(record)
-    return all_records
 
 def make_random_dna_seq(dna_len, dna_gc, max_diff):
     """Generates random DNA sequence with a specific length and GC content.

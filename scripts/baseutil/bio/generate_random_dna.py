@@ -18,7 +18,7 @@ from Bio.SeqRecord import SeqRecord
 def main(args):
     check_input(args)
     rand_seqs = make_random_dna_records(
-        args.dna_len, args.dna_gc, args.num, prefix=args.prefix)
+        args.dna_len, args.gc, args.num, prefix=args.prefix)
     SeqIO.write(rand_seqs, sys.stdout, args.format)
 
 def check_input(args):
@@ -31,12 +31,12 @@ def check_input(args):
     if args.dna_len < 1:
         raise ValueError("Wrong DNA length = %s" % args.dna_len)
 
-    if args.dna_gc < 0 or args.dna_gc > 100:
-        raise ValueError("Wrong DNA GC content = %.1f%%" % args.dna_gc)
+    if args.gc < 0 or args.gc > 100:
+        raise ValueError("Wrong DNA GC content = %.1f%%" % args.gc)
 
-    if 0 < args.dna_gc < 1:
+    if 0 < args.gc < 1:
         logging.warning("Didn't you mean GC content = %.0f%% (not %.2f%%)?" %
-                        (100*args.dna_gc, args.dna_gc))
+                        (100*args.gc, args.gc))
 
 def make_random_dna_records(dna_len, dna_gc, num_records, prefix=''):
     "Returs a generator of SeqRecord objects containing random DNA sequences."
@@ -74,13 +74,13 @@ def parse_args():
         "and GC content.")
     parser.add_argument('dna_len', metavar='DNA_LEN', type=int,
                         help='DNA sequence length')
-    parser.add_argument('dna_gc', metavar='DNA_GC', type=float,
-                        help='DNA sequence GC content (between 0 and 100)')
-    parser.add_argument('num', metavar='NUM_SEQS', type=int,
-                        help="number of random sequences to generate")
-    parser.add_argument('--prefix', metavar='str', default='',
+    parser.add_argument('-g', '--gc', metavar='GC', type=float, default=50.0,
+                        help='DNA sequence GC content (default 50)')
+    parser.add_argument('-n', '--num', metavar='NUM', type=int, default=1,
+                        help="number of random sequences to generate (default 1)")
+    parser.add_argument('-p', '--prefix', metavar='STR', default='',
                         help="prefix for the sequence names (e.g. 'rand_')")
-    parser.add_argument('--format', metavar='str', default='fasta-2line',
+    parser.add_argument('-f', '--format', metavar='STR', default='fasta-2line',
                         help="output format, default is 'fasta-2line'. "
                         "See the list of other formats at "
                         "https://biopython.org/wiki/SeqIO")
